@@ -14,6 +14,8 @@ import { RiskPolicy } from '../../domain/services/RiskPolicy';
 import { UnitEconomicsGuard } from '../../domain/services/UnitEconomicsGuard';
 import { RiskAnalyzer, RiskSignal } from '../../domain/services/RiskAnalyzer';
 import { TierEngine } from '../../domain/services/TierEngine';
+import { Actor } from '../auth/Actor';
+import { AuthorizationGuard } from '../auth/AuthorizationGuard';
 
 export interface InitiateRentalResult {
   rental: Rental;
@@ -29,18 +31,21 @@ export class InitiateRentalService {
     this.paymentProvider = paymentProvider;
   }
 
-  async execute(input: {
-    renter: User;
-    watch: Watch;
-    rentalPrice: number;
-    city: string;
-    zipCode: string;
-    renterKyc: KycProfile | null;
-    watchInsurance: InsurancePolicy | null;
-    renterTier: RenterTier;
-    recentRentalTimestamps: Date[];
-    now: Date;
-  }): Promise<InitiateRentalResult> {
+  async execute(
+    actor: Actor,
+    input: {
+      renter: User;
+      watch: Watch;
+      rentalPrice: number;
+      city: string;
+      zipCode: string;
+      renterKyc: KycProfile | null;
+      watchInsurance: InsurancePolicy | null;
+      renterTier: RenterTier;
+      recentRentalTimestamps: Date[];
+      now: Date;
+    },
+  ): Promise<InitiateRentalResult> {
     const {
       renter,
       watch,
@@ -53,6 +58,12 @@ export class InitiateRentalService {
       recentRentalTimestamps,
       now,
     } = input;
+
+    // 0a. Caller must be an authenticated user acting as themselves
+    AuthorizationGuard.requireSelf(actor, renter.id);
+
+    // 0b. Caller must not be the watch owner (self-rental authz boundary)
+    AuthorizationGuard.rejectSelfOwned(actor, watch.ownerId);
 
     // 1. Anti-custody firewall — hard stop
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(

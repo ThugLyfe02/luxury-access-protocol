@@ -4,6 +4,8 @@ import { PaymentProvider } from '../../domain/interfaces/PaymentProvider';
 import { Rental } from '../../domain/entities/Rental';
 import { ManualReviewCase } from '../../domain/entities/ManualReviewCase';
 import { RegulatoryGuardrails } from '../../domain/services/RegulatoryGuardrails';
+import { Actor } from '../auth/Actor';
+import { AuthorizationGuard } from '../auth/AuthorizationGuard';
 
 /**
  * Orchestrates interaction between the platform and the external payment
@@ -21,9 +23,11 @@ export class MarketplacePaymentService {
 
   /**
    * Handle external event: payment authorized by Stripe.
-   * Renter's card has been authorized but not yet captured.
+   * Restricted to system actors (webhook callbacks).
    */
-  async handlePaymentAuthorized(rental: Rental): Promise<void> {
+  async handlePaymentAuthorized(actor: Actor, rental: Rental): Promise<void> {
+    AuthorizationGuard.requireSystem(actor);
+
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
       'handle_payment_authorized',
       { rentalId: rental.id },
@@ -43,10 +47,13 @@ export class MarketplacePaymentService {
 
   /**
    * Handle external event: payment captured by Stripe.
+   * Restricted to system actors (webhook callbacks).
    * Funds have been captured from renter's payment method by Stripe,
    * not by the platform.
    */
-  async handlePaymentCaptured(rental: Rental): Promise<void> {
+  async handlePaymentCaptured(actor: Actor, rental: Rental): Promise<void> {
+    AuthorizationGuard.requireSystem(actor);
+
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
       'handle_payment_captured',
       { rentalId: rental.id },
@@ -77,9 +84,12 @@ export class MarketplacePaymentService {
 
   /**
    * Handle external event: payment refunded via Stripe.
+   * Restricted to system actors (webhook callbacks).
    * Stripe returns funds to renter — platform does not touch principal.
    */
-  async handlePaymentRefunded(rental: Rental): Promise<void> {
+  async handlePaymentRefunded(actor: Actor, rental: Rental): Promise<void> {
+    AuthorizationGuard.requireSystem(actor);
+
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
       'handle_payment_refunded',
       { rentalId: rental.id },
@@ -110,9 +120,12 @@ export class MarketplacePaymentService {
 
   /**
    * Handle dispute opened on external payment.
+   * Restricted to system actors (webhook callbacks).
    * Freezes the rental — no release possible while dispute is open.
    */
-  async handleDisputeOpened(rental: Rental): Promise<void> {
+  async handleDisputeOpened(actor: Actor, rental: Rental): Promise<void> {
+    AuthorizationGuard.requireSystem(actor);
+
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
       'handle_dispute_opened',
       { rentalId: rental.id },
@@ -125,12 +138,15 @@ export class MarketplacePaymentService {
 
   /**
    * Handle dispute resolved — clears the dispute lock.
+   * Restricted to system actors (webhook callbacks).
    * Does NOT automatically release funds or transition state.
    * The rental remains in DISPUTED escrow status with disputeOpen=false.
    * To proceed toward release, the rental must be explicitly transitioned
    * back to CAPTURED state via restoreToCaptured(). No magical release path.
    */
-  async handleDisputeResolved(rental: Rental): Promise<void> {
+  async handleDisputeResolved(actor: Actor, rental: Rental): Promise<void> {
+    AuthorizationGuard.requireSystem(actor);
+
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
       'handle_dispute_resolved',
       { rentalId: rental.id },
@@ -143,9 +159,16 @@ export class MarketplacePaymentService {
 
   /**
    * Confirm physical return of the watch.
+   * Restricted to the watch owner or an admin — renter cannot self-confirm.
    * Gated by entity: only allowed when payment is captured or disputed.
    */
-  async confirmReturn(rental: Rental): Promise<void> {
+  async confirmReturn(
+    actor: Actor,
+    rental: Rental,
+    watchOwnerId: string,
+  ): Promise<void> {
+    AuthorizationGuard.requireSelfOrAdmin(actor, watchOwnerId);
+
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
       'confirm_return',
       { rentalId: rental.id },
@@ -158,11 +181,14 @@ export class MarketplacePaymentService {
 
   /**
    * Restore a disputed rental to CAPTURED state after dispute resolution.
+   * Restricted to system actors or admin users.
    * Requires: dispute must be resolved (disputeOpen === false) and
    * current escrow status must be DISPUTED.
    * This is the only path from DISPUTED back to the normal release flow.
    */
-  async restoreDisputedToCaptured(rental: Rental): Promise<void> {
+  async restoreDisputedToCaptured(actor: Actor, rental: Rental): Promise<void> {
+    AuthorizationGuard.requireSystemOrAdmin(actor);
+
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
       'restore_disputed_to_captured',
       { rentalId: rental.id },
@@ -202,12 +228,17 @@ export class MarketplacePaymentService {
    *
    * This method hard-fails if any gate is unsatisfied.
    */
-  async releaseToOwner(params: {
-    rental: Rental;
-    ownerConnectedAccountId: string;
-    ownerShareAmount: number;
-    blockingReviewCases: ManualReviewCase[];
-  }): Promise<{ transferId: string }> {
+  async releaseToOwner(
+    actor: Actor,
+    params: {
+      rental: Rental;
+      ownerConnectedAccountId: string;
+      ownerShareAmount: number;
+      blockingReviewCases: ManualReviewCase[];
+    },
+  ): Promise<{ transferId: string }> {
+    AuthorizationGuard.requireSystemOrAdmin(actor);
+
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
       'release_to_owner',
       { rentalId: params.rental.id, amount: params.ownerShareAmount },
