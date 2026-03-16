@@ -37,6 +37,23 @@ export class UnitEconomicsGuard {
     netAfterCosts: number;
     passes: boolean;
   } {
+    if (
+      rentalCharge <= 0 ||
+      watchMarketValue <= 0 ||
+      platformGross < 0 ||
+      !Number.isFinite(rentalCharge) ||
+      !Number.isFinite(watchMarketValue) ||
+      !Number.isFinite(platformGross)
+    ) {
+      return {
+        processingFees: 0,
+        lossBuffer: 0,
+        marginFloor: MARGIN_FLOOR_MINIMUM,
+        netAfterCosts: 0,
+        passes: false,
+      };
+    }
+
     const processingFees = rentalCharge * PROCESSING_RATE + PROCESSING_FIXED;
     const lossBuffer = watchMarketValue * LOSS_BUFFER_RATE;
     const marginFloor = Math.max(
