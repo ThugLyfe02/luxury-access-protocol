@@ -1,6 +1,10 @@
 import { DomainError } from '../errors/DomainError';
 import { ReviewSeverity } from '../enums/ReviewSeverity';
 
+const ALL_REVIEW_SEVERITIES: ReadonlySet<string> = new Set(
+  Object.values(ReviewSeverity),
+);
+
 export class ManualReviewCase {
   readonly id: string;
   readonly rentalId: string;
@@ -12,13 +16,33 @@ export class ManualReviewCase {
   private _resolvedAt: Date | null;
   private _resolution: string | null;
 
-  constructor(params: {
+  private constructor(params: {
     id: string;
     rentalId: string;
     severity: ReviewSeverity;
     reason: string;
     createdAt: Date;
+    resolved: boolean;
+    resolvedBy: string | null;
+    resolvedAt: Date | null;
+    resolution: string | null;
   }) {
+    this.id = params.id;
+    this.rentalId = params.rentalId;
+    this.severity = params.severity;
+    this.reason = params.reason;
+    this.createdAt = params.createdAt;
+    this._resolved = params.resolved;
+    this._resolvedBy = params.resolvedBy;
+    this._resolvedAt = params.resolvedAt;
+    this._resolution = params.resolution;
+  }
+
+  private static validate(params: {
+    id: string;
+    rentalId: string;
+    reason: string;
+  }): void {
     if (!params.id) {
       throw new DomainError(
         'Review case ID is required',
@@ -39,16 +63,82 @@ export class ManualReviewCase {
         'REVIEW_REQUIRED',
       );
     }
+  }
 
-    this.id = params.id;
-    this.rentalId = params.rentalId;
-    this.severity = params.severity;
-    this.reason = params.reason;
-    this.createdAt = params.createdAt;
-    this._resolved = false;
-    this._resolvedBy = null;
-    this._resolvedAt = null;
-    this._resolution = null;
+  static create(params: {
+    id: string;
+    rentalId: string;
+    severity: ReviewSeverity;
+    reason: string;
+    createdAt: Date;
+  }): ManualReviewCase {
+    ManualReviewCase.validate(params);
+
+    return new ManualReviewCase({
+      ...params,
+      resolved: false,
+      resolvedBy: null,
+      resolvedAt: null,
+      resolution: null,
+    });
+  }
+
+  static restore(params: {
+    id: string;
+    rentalId: string;
+    severity: string;
+    reason: string;
+    createdAt: Date;
+    resolved: boolean;
+    resolvedBy: string | null;
+    resolvedAt: Date | null;
+    resolution: string | null;
+  }): ManualReviewCase {
+    ManualReviewCase.validate(params);
+
+    if (!ALL_REVIEW_SEVERITIES.has(params.severity)) {
+      throw new DomainError(
+        `Unknown review severity from persistence: ${params.severity}`,
+        'REVIEW_REQUIRED',
+      );
+    }
+
+    // Structural consistency: resolved cases must have resolver, date, and resolution
+    if (params.resolved) {
+      if (!params.resolvedBy) {
+        throw new DomainError(
+          'Resolved review case must have a resolvedBy ID',
+          'REVIEW_REQUIRED',
+        );
+      }
+      if (params.resolvedAt === null) {
+        throw new DomainError(
+          'Resolved review case must have a resolvedAt date',
+          'REVIEW_REQUIRED',
+        );
+      }
+      if (!params.resolution) {
+        throw new DomainError(
+          'Resolved review case must have a resolution description',
+          'REVIEW_REQUIRED',
+        );
+      }
+    }
+
+    // Structural consistency: unresolved cases must NOT have resolution fields
+    if (!params.resolved) {
+      if (params.resolvedBy !== null || params.resolvedAt !== null || params.resolution !== null) {
+        throw new DomainError(
+          'Unresolved review case must not have resolution fields set',
+          'INVALID_STATE_TRANSITION',
+        );
+      }
+    }
+
+    return new ManualReviewCase({
+      ...params,
+      severity: params.severity as ReviewSeverity,
+    });
   }
 
   get resolved(): boolean {

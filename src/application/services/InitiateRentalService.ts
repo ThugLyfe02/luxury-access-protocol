@@ -1,5 +1,4 @@
 import { DomainError } from '../../domain/errors/DomainError';
-import { EscrowStatus } from '../../domain/enums/EscrowStatus';
 import { PaymentProvider } from '../../domain/interfaces/PaymentProvider';
 import { User } from '../../domain/entities/User';
 import { Watch } from '../../domain/entities/Watch';
@@ -8,6 +7,7 @@ import { KycProfile } from '../../domain/entities/KycProfile';
 import { InsurancePolicy } from '../../domain/entities/InsurancePolicy';
 import { ManualReviewCase } from '../../domain/entities/ManualReviewCase';
 import { RenterTier } from '../../domain/enums/RenterTier';
+import { ReviewSeverity } from '../../domain/enums/ReviewSeverity';
 import { RegulatoryGuardrails } from '../../domain/services/RegulatoryGuardrails';
 import { CompliancePolicy } from '../../domain/services/CompliancePolicy';
 import { RiskPolicy } from '../../domain/services/RiskPolicy';
@@ -97,7 +97,7 @@ export class InitiateRentalService {
 
     // 9. If risk analysis requires manual review with CRITICAL signals, block
     const hasCriticalSignal = riskSignals.some(
-      (s) => s.severity === 'CRITICAL',
+      (s) => s.severity === ReviewSeverity.CRITICAL,
     );
     if (hasCriticalSignal) {
       throw new DomainError(
@@ -107,13 +107,11 @@ export class InitiateRentalService {
     }
 
     // 10. Create rental entity
-    const rental = new Rental({
+    const rental = Rental.create({
       id: crypto.randomUUID(),
       renterId: renter.id,
       watchId: watch.id,
       rentalPrice,
-      escrowStatus: EscrowStatus.NOT_STARTED,
-      externalPaymentIntentId: null,
       createdAt: now,
     });
 

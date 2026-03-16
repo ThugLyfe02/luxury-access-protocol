@@ -10,6 +10,10 @@ const VALID_TRANSITIONS: ReadonlyMap<KycStatus, ReadonlySet<KycStatus>> =
     [KycStatus.EXPIRED, new Set([KycStatus.PENDING])],
   ]);
 
+const ALL_KYC_STATUSES: ReadonlySet<string> = new Set(
+  Object.values(KycStatus),
+);
+
 export class KycProfile {
   readonly userId: string;
   readonly providerReference: string | null;
@@ -21,7 +25,7 @@ export class KycProfile {
   private _pepFlagged: boolean;
   private _sanctionsFlagged: boolean;
 
-  constructor(params: {
+  private constructor(params: {
     userId: string;
     status: KycStatus;
     providerReference: string | null;
@@ -32,10 +36,6 @@ export class KycProfile {
     sanctionsFlagged: boolean;
     createdAt: Date;
   }) {
-    if (!params.userId) {
-      throw new DomainError('User ID is required for KYC profile', 'KYC_REQUIRED');
-    }
-
     this.userId = params.userId;
     this._status = params.status;
     this.providerReference = params.providerReference;
@@ -45,6 +45,96 @@ export class KycProfile {
     this._pepFlagged = params.pepFlagged;
     this._sanctionsFlagged = params.sanctionsFlagged;
     this.createdAt = params.createdAt;
+  }
+
+  private static validateStructuralConsistency(
+    status: KycStatus,
+    verifiedAt: Date | null,
+    expiresAt: Date | null,
+  ): void {
+    if (status === KycStatus.VERIFIED) {
+      if (verifiedAt === null) {
+        throw new DomainError(
+          'VERIFIED KYC profile must have a verifiedAt date',
+          'KYC_REQUIRED',
+        );
+      }
+      if (expiresAt === null) {
+        throw new DomainError(
+          'VERIFIED KYC profile must have an expiresAt date',
+          'KYC_REQUIRED',
+        );
+      }
+      if (expiresAt <= verifiedAt) {
+        throw new DomainError(
+          'Expiration must be after verification date',
+          'KYC_REQUIRED',
+        );
+      }
+    }
+  }
+
+  static create(params: {
+    userId: string;
+    providerReference: string | null;
+    createdAt: Date;
+  }): KycProfile {
+    if (!params.userId) {
+      throw new DomainError(
+        'User ID is required for KYC profile',
+        'KYC_REQUIRED',
+      );
+    }
+
+    return new KycProfile({
+      userId: params.userId,
+      status: KycStatus.NOT_STARTED,
+      providerReference: params.providerReference,
+      verifiedAt: null,
+      expiresAt: null,
+      rejectionReason: null,
+      pepFlagged: false,
+      sanctionsFlagged: false,
+      createdAt: params.createdAt,
+    });
+  }
+
+  static restore(params: {
+    userId: string;
+    status: string;
+    providerReference: string | null;
+    verifiedAt: Date | null;
+    expiresAt: Date | null;
+    rejectionReason: string | null;
+    pepFlagged: boolean;
+    sanctionsFlagged: boolean;
+    createdAt: Date;
+  }): KycProfile {
+    if (!params.userId) {
+      throw new DomainError(
+        'User ID is required for KYC profile',
+        'KYC_REQUIRED',
+      );
+    }
+
+    if (!ALL_KYC_STATUSES.has(params.status)) {
+      throw new DomainError(
+        `Unknown KYC status from persistence: ${params.status}`,
+        'INVALID_STATE_TRANSITION',
+      );
+    }
+
+    const status = params.status as KycStatus;
+    KycProfile.validateStructuralConsistency(
+      status,
+      params.verifiedAt,
+      params.expiresAt,
+    );
+
+    return new KycProfile({
+      ...params,
+      status,
+    });
   }
 
   get status(): KycStatus {

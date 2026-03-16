@@ -35,6 +35,10 @@ const VALID_TRANSITIONS: ReadonlyMap<EscrowStatus, ReadonlySet<EscrowStatus>> =
     [EscrowStatus.REFUNDED, new Set<EscrowStatus>()],
   ]);
 
+const ALL_ESCROW_STATUSES: ReadonlySet<string> = new Set(
+  Object.values(EscrowStatus),
+);
+
 export class Rental {
   readonly id: string;
   readonly renterId: string;
@@ -46,43 +50,163 @@ export class Rental {
   private _returnConfirmed: boolean;
   private _disputeOpen: boolean;
 
-  constructor(params: {
+  private constructor(params: {
     id: string;
     renterId: string;
     watchId: string;
     rentalPrice: number;
     escrowStatus: EscrowStatus;
     externalPaymentIntentId: string | null;
+    returnConfirmed: boolean;
+    disputeOpen: boolean;
     createdAt: Date;
   }) {
-    if (!params.id) {
-      throw new DomainError('Rental ID is required', 'INVALID_RENTAL_DATES');
-    }
-
-    if (!params.renterId) {
-      throw new DomainError('Renter ID is required', 'INVALID_RENTAL_PARTIES');
-    }
-
-    if (!params.watchId) {
-      throw new DomainError('Watch ID is required', 'INVALID_RENTAL_PARTIES');
-    }
-
-    if (params.rentalPrice <= 0) {
-      throw new DomainError(
-        'Rental price must be greater than zero',
-        'INVALID_VALUATION',
-      );
-    }
-
     this.id = params.id;
     this.renterId = params.renterId;
     this.watchId = params.watchId;
     this.rentalPrice = params.rentalPrice;
     this._escrowStatus = params.escrowStatus;
     this._externalPaymentIntentId = params.externalPaymentIntentId;
-    this._returnConfirmed = false;
-    this._disputeOpen = false;
+    this._returnConfirmed = params.returnConfirmed;
+    this._disputeOpen = params.disputeOpen;
     this.createdAt = params.createdAt;
+  }
+
+  /**
+   * Create a new rental. Only valid initial state is NOT_STARTED.
+   * returnConfirmed and disputeOpen are always false on creation.
+   */
+  static create(params: {
+    id: string;
+    renterId: string;
+    watchId: string;
+    rentalPrice: number;
+    createdAt: Date;
+  }): Rental {
+    if (!params.id) {
+      throw new DomainError('Rental ID is required', 'INVALID_RENTAL_DATES');
+    }
+    if (!params.renterId) {
+      throw new DomainError('Renter ID is required', 'INVALID_RENTAL_PARTIES');
+    }
+    if (!params.watchId) {
+      throw new DomainError('Watch ID is required', 'INVALID_RENTAL_PARTIES');
+    }
+    if (params.rentalPrice <= 0 || !Number.isFinite(params.rentalPrice)) {
+      throw new DomainError(
+        'Rental price must be a positive finite number',
+        'INVALID_VALUATION',
+      );
+    }
+
+    return new Rental({
+      id: params.id,
+      renterId: params.renterId,
+      watchId: params.watchId,
+      rentalPrice: params.rentalPrice,
+      escrowStatus: EscrowStatus.NOT_STARTED,
+      externalPaymentIntentId: null,
+      returnConfirmed: false,
+      disputeOpen: false,
+      createdAt: params.createdAt,
+    });
+  }
+
+  /**
+   * Restore a rental from persistence. Validates all invariants
+   * that must hold regardless of how the data was stored.
+   * Does NOT enforce FSM transitions — the persisted state is
+   * the current state, not a transition target.
+   */
+  static restore(params: {
+    id: string;
+    renterId: string;
+    watchId: string;
+    rentalPrice: number;
+    escrowStatus: string;
+    externalPaymentIntentId: string | null;
+    returnConfirmed: boolean;
+    disputeOpen: boolean;
+    createdAt: Date;
+  }): Rental {
+    if (!params.id) {
+      throw new DomainError('Rental ID is required', 'INVALID_RENTAL_DATES');
+    }
+    if (!params.renterId) {
+      throw new DomainError('Renter ID is required', 'INVALID_RENTAL_PARTIES');
+    }
+    if (!params.watchId) {
+      throw new DomainError('Watch ID is required', 'INVALID_RENTAL_PARTIES');
+    }
+    if (params.rentalPrice <= 0 || !Number.isFinite(params.rentalPrice)) {
+      throw new DomainError(
+        'Rental price must be a positive finite number',
+        'INVALID_VALUATION',
+      );
+    }
+
+    // Validate escrowStatus is a known enum value (boundary check for persistence data)
+    if (!ALL_ESCROW_STATUSES.has(params.escrowStatus)) {
+      throw new DomainError(
+        `Unknown escrow status from persistence: ${params.escrowStatus}`,
+        'INVALID_ESCROW_TRANSITION',
+      );
+    }
+    const escrowStatus = params.escrowStatus as EscrowStatus;
+
+    // Validate structural consistency of persisted state
+    if (
+      escrowStatus === EscrowStatus.NOT_STARTED &&
+      params.externalPaymentIntentId !== null
+    ) {
+      throw new DomainError(
+        'NOT_STARTED rental cannot have an external payment intent',
+        'INVALID_PAYMENT_TRANSITION',
+      );
+    }
+
+    if (
+      escrowStatus !== EscrowStatus.NOT_STARTED &&
+      !params.externalPaymentIntentId
+    ) {
+      throw new DomainError(
+        'Active rental must have an external payment intent',
+        'INVALID_PAYMENT_TRANSITION',
+      );
+    }
+
+    if (params.returnConfirmed) {
+      const capturedOrLater =
+        escrowStatus === EscrowStatus.EXTERNAL_PAYMENT_CAPTURED ||
+        escrowStatus === EscrowStatus.FUNDS_RELEASED_TO_OWNER ||
+        escrowStatus === EscrowStatus.DISPUTED ||
+        escrowStatus === EscrowStatus.REFUNDED;
+      if (!capturedOrLater) {
+        throw new DomainError(
+          'returnConfirmed cannot be true before payment capture',
+          'INVALID_STATE_TRANSITION',
+        );
+      }
+    }
+
+    if (params.disputeOpen && escrowStatus !== EscrowStatus.DISPUTED) {
+      throw new DomainError(
+        'disputeOpen can only be true when escrowStatus is DISPUTED',
+        'INVALID_STATE_TRANSITION',
+      );
+    }
+
+    return new Rental({
+      id: params.id,
+      renterId: params.renterId,
+      watchId: params.watchId,
+      rentalPrice: params.rentalPrice,
+      escrowStatus,
+      externalPaymentIntentId: params.externalPaymentIntentId,
+      returnConfirmed: params.returnConfirmed,
+      disputeOpen: params.disputeOpen,
+      createdAt: params.createdAt,
+    });
   }
 
   get escrowStatus(): EscrowStatus {
@@ -173,6 +297,22 @@ export class Rental {
       );
     }
     this._disputeOpen = false;
+  }
+
+  /**
+   * After a dispute is resolved in the owner's favor, restore the rental
+   * to CAPTURED state so the normal release flow can proceed.
+   * Requires: dispute must already be resolved (disputeOpen === false),
+   * and current status must be DISPUTED.
+   */
+  restoreToCaptured(): void {
+    if (this._disputeOpen) {
+      throw new DomainError(
+        'Cannot restore to captured while dispute is still open',
+        'DISPUTE_LOCK',
+      );
+    }
+    this.transitionTo(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
   }
 
   markRefunded(): void {

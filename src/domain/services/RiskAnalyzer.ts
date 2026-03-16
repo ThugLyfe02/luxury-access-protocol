@@ -125,7 +125,7 @@ export class RiskAnalyzer {
     const highestSeverity = RiskAnalyzer.highestSeverity(signals);
     const combinedReason = signals.map((s) => s.message).join('; ');
 
-    return new ManualReviewCase({
+    return ManualReviewCase.create({
       id: crypto.randomUUID(),
       rentalId,
       severity: highestSeverity,

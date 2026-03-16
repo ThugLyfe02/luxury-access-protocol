@@ -1,6 +1,10 @@
 import { DomainError } from '../errors/DomainError';
 import { MarketplaceRole } from '../enums/MarketplaceRole';
 
+const ALL_MARKETPLACE_ROLES: ReadonlySet<string> = new Set(
+  Object.values(MarketplaceRole),
+);
+
 export class User {
   readonly id: string;
   readonly role: MarketplaceRole;
@@ -9,7 +13,7 @@ export class User {
   private _disputesCount: number;
   private _chargebacksCount: number;
 
-  constructor(params: {
+  private constructor(params: {
     id: string;
     role: MarketplaceRole;
     trustScore: number;
@@ -17,37 +21,94 @@ export class User {
     chargebacksCount: number;
     createdAt: Date;
   }) {
-    if (!params.id) {
-      throw new DomainError('User ID is required', 'INVALID_NAME');
-    }
-
-    if (params.trustScore < 0 || params.trustScore > 100) {
-      throw new DomainError(
-        'Trust score must be between 0 and 100',
-        'INVALID_OWNER',
-      );
-    }
-
-    if (params.disputesCount < 0) {
-      throw new DomainError(
-        'Disputes count cannot be negative',
-        'INVALID_OWNER',
-      );
-    }
-
-    if (params.chargebacksCount < 0) {
-      throw new DomainError(
-        'Chargebacks count cannot be negative',
-        'INVALID_OWNER',
-      );
-    }
-
     this.id = params.id;
     this.role = params.role;
     this._trustScore = params.trustScore;
     this._disputesCount = params.disputesCount;
     this._chargebacksCount = params.chargebacksCount;
     this.createdAt = params.createdAt;
+  }
+
+  private static validate(params: {
+    id: string;
+    role: string;
+    trustScore: number;
+    disputesCount: number;
+    chargebacksCount: number;
+  }): void {
+    if (!params.id) {
+      throw new DomainError('User ID is required', 'INVALID_NAME');
+    }
+
+    if (!ALL_MARKETPLACE_ROLES.has(params.role)) {
+      throw new DomainError(
+        `Unknown marketplace role: ${params.role}`,
+        'INVALID_OWNER',
+      );
+    }
+
+    if (
+      !Number.isFinite(params.trustScore) ||
+      params.trustScore < 0 ||
+      params.trustScore > 100
+    ) {
+      throw new DomainError(
+        'Trust score must be a finite number between 0 and 100',
+        'INVALID_OWNER',
+      );
+    }
+
+    if (!Number.isInteger(params.disputesCount) || params.disputesCount < 0) {
+      throw new DomainError(
+        'Disputes count must be a non-negative integer',
+        'INVALID_OWNER',
+      );
+    }
+
+    if (
+      !Number.isInteger(params.chargebacksCount) ||
+      params.chargebacksCount < 0
+    ) {
+      throw new DomainError(
+        'Chargebacks count must be a non-negative integer',
+        'INVALID_OWNER',
+      );
+    }
+  }
+
+  static create(params: {
+    id: string;
+    role: MarketplaceRole;
+    trustScore: number;
+    disputesCount: number;
+    chargebacksCount: number;
+    createdAt: Date;
+  }): User {
+    User.validate({
+      id: params.id,
+      role: params.role,
+      trustScore: params.trustScore,
+      disputesCount: params.disputesCount,
+      chargebacksCount: params.chargebacksCount,
+    });
+
+    return new User(params);
+  }
+
+  static restore(params: {
+    id: string;
+    role: string;
+    trustScore: number;
+    disputesCount: number;
+    chargebacksCount: number;
+    createdAt: Date;
+  }): User {
+    User.validate(params);
+
+    return new User({
+      ...params,
+      role: params.role as MarketplaceRole,
+    });
   }
 
   get trustScore(): number {

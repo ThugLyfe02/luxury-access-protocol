@@ -11,7 +11,7 @@ export class ConditionReport {
   readonly createdAt: Date;
   private _approved: boolean;
 
-  constructor(params: {
+  private constructor(params: {
     id: string;
     rentalId: string;
     watchId: string;
@@ -20,7 +20,27 @@ export class ConditionReport {
     conditionGrade: number;
     damageNotes: string;
     createdAt: Date;
+    approved: boolean;
   }) {
+    this.id = params.id;
+    this.rentalId = params.rentalId;
+    this.watchId = params.watchId;
+    this.inspectorId = params.inspectorId;
+    this.watchMarketValue = params.watchMarketValue;
+    this.conditionGrade = params.conditionGrade;
+    this.damageNotes = params.damageNotes;
+    this.createdAt = params.createdAt;
+    this._approved = params.approved;
+  }
+
+  private static validate(params: {
+    id: string;
+    rentalId: string;
+    watchId: string;
+    inspectorId: string;
+    watchMarketValue: number;
+    conditionGrade: number;
+  }): void {
     if (!params.id) {
       throw new DomainError(
         'Condition report ID is required',
@@ -49,29 +69,60 @@ export class ConditionReport {
       );
     }
 
-    if (params.conditionGrade < 1 || params.conditionGrade > 10) {
+    if (
+      params.watchMarketValue <= 0 ||
+      !Number.isFinite(params.watchMarketValue)
+    ) {
       throw new DomainError(
-        'Condition grade must be between 1 and 10',
-        'CONDITION_REPORT_INVALID',
-      );
-    }
-
-    if (params.watchMarketValue <= 0) {
-      throw new DomainError(
-        'Watch market value must be positive',
+        'Watch market value must be a positive finite number',
         'INVALID_VALUATION',
       );
     }
 
-    this.id = params.id;
-    this.rentalId = params.rentalId;
-    this.watchId = params.watchId;
-    this.inspectorId = params.inspectorId;
-    this.watchMarketValue = params.watchMarketValue;
-    this.conditionGrade = params.conditionGrade;
-    this.damageNotes = params.damageNotes;
-    this.createdAt = params.createdAt;
-    this._approved = false;
+    if (
+      !Number.isInteger(params.conditionGrade) ||
+      params.conditionGrade < 1 ||
+      params.conditionGrade > 10
+    ) {
+      throw new DomainError(
+        'Condition grade must be an integer between 1 and 10',
+        'CONDITION_REPORT_INVALID',
+      );
+    }
+  }
+
+  static create(params: {
+    id: string;
+    rentalId: string;
+    watchId: string;
+    inspectorId: string;
+    watchMarketValue: number;
+    conditionGrade: number;
+    damageNotes: string;
+    createdAt: Date;
+  }): ConditionReport {
+    ConditionReport.validate(params);
+
+    return new ConditionReport({
+      ...params,
+      approved: false,
+    });
+  }
+
+  static restore(params: {
+    id: string;
+    rentalId: string;
+    watchId: string;
+    inspectorId: string;
+    watchMarketValue: number;
+    conditionGrade: number;
+    damageNotes: string;
+    createdAt: Date;
+    approved: boolean;
+  }): ConditionReport {
+    ConditionReport.validate(params);
+
+    return new ConditionReport(params);
   }
 
   get approved(): boolean {
