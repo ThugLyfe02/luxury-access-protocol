@@ -33,7 +33,12 @@ export class RegulatoryGuardrails {
     }
 
     if (context) {
-      const serialized = JSON.stringify(context).toLowerCase();
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(context).toLowerCase();
+      } catch {
+        serialized = String(Object.keys(context)).toLowerCase();
+      }
       for (const keyword of FORBIDDEN_CUSTODY_KEYWORDS) {
         if (serialized.includes(keyword)) {
           throw new DomainError(

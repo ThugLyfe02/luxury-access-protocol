@@ -6,6 +6,12 @@ import { Watch } from '../entities/Watch';
 
 const HIGH_VALUE_THRESHOLD = 5000;
 
+const ACCEPTABLE_HIGH_VALUE_VERIFICATION: ReadonlySet<VerificationStatus> =
+  new Set([
+    VerificationStatus.VERIFIED_BY_PARTNER,
+    VerificationStatus.VERIFIED_IN_VAULT,
+  ]);
+
 const ROLE_RENTAL_CEILINGS: ReadonlyMap<MarketplaceRole, number> = new Map([
   [MarketplaceRole.RENTER, 10_000],
   [MarketplaceRole.OWNER, 25_000],
@@ -41,7 +47,7 @@ export class RiskPolicy {
 
     if (
       watch.marketValue > HIGH_VALUE_THRESHOLD &&
-      watch.verificationStatus === VerificationStatus.UNVERIFIED
+      !ACCEPTABLE_HIGH_VALUE_VERIFICATION.has(watch.verificationStatus)
     ) {
       throw new DomainError(
         'Watches above $5,000 require at least partner verification',
@@ -61,7 +67,7 @@ export class RiskPolicy {
   static ensureWatchIsVerified(watch: Watch, rentalValue: number): void {
     if (
       rentalValue > HIGH_VALUE_THRESHOLD &&
-      watch.verificationStatus === VerificationStatus.UNVERIFIED
+      !ACCEPTABLE_HIGH_VALUE_VERIFICATION.has(watch.verificationStatus)
     ) {
       throw new DomainError(
         'Watch must be verified for high-value rentals',

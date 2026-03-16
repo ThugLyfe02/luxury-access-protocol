@@ -3,6 +3,7 @@ import { ACTIVE_CITIES } from '../enums/City';
 
 const NYC_ZIP_PREFIX_MIN = 100;
 const NYC_ZIP_PREFIX_MAX = 114;
+const ZIP_PATTERN = /^\d{5}$/;
 
 export class CompliancePolicy {
   static ensureCityActive(city: string): void {
@@ -21,21 +22,14 @@ export class CompliancePolicy {
 
     const trimmed = zipCode.trim();
 
-    if (trimmed.length < 5) {
+    if (!ZIP_PATTERN.test(trimmed)) {
       throw new DomainError(
-        'Invalid ZIP code for NYC',
+        'ZIP code must be exactly 5 numeric digits',
         'CITY_NOT_ACTIVE',
       );
     }
 
     const prefix = parseInt(trimmed.substring(0, 3), 10);
-
-    if (isNaN(prefix)) {
-      throw new DomainError(
-        'Invalid ZIP code format',
-        'CITY_NOT_ACTIVE',
-      );
-    }
 
     if (prefix < NYC_ZIP_PREFIX_MIN || prefix > NYC_ZIP_PREFIX_MAX) {
       throw new DomainError(
