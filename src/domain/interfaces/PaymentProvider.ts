@@ -9,4 +9,10 @@ export interface PaymentProvider {
   capturePayment(intentId: string): Promise<{ captured: boolean }>;
 
   refundPayment(intentId: string): Promise<{ refunded: boolean }>;
+
+  transferToConnectedAccount(params: {
+    amount: number;
+    connectedAccountId: string;
+    rentalId: string;
+  }): Promise<{ transferId: string }>;
 }
