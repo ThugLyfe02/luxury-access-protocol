@@ -84,7 +84,7 @@ export class Rental {
     createdAt: Date;
   }): Rental {
     if (!params.id) {
-      throw new DomainError('Rental ID is required', 'INVALID_RENTAL_DATES');
+      throw new DomainError('Rental ID is required', 'INVALID_RENTAL_PARTIES');
     }
     if (!params.renterId) {
       throw new DomainError('Renter ID is required', 'INVALID_RENTAL_PARTIES');
@@ -130,7 +130,7 @@ export class Rental {
     createdAt: Date;
   }): Rental {
     if (!params.id) {
-      throw new DomainError('Rental ID is required', 'INVALID_RENTAL_DATES');
+      throw new DomainError('Rental ID is required', 'INVALID_RENTAL_PARTIES');
     }
     if (!params.renterId) {
       throw new DomainError('Renter ID is required', 'INVALID_RENTAL_PARTIES');

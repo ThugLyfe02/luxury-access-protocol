@@ -37,7 +37,7 @@ export class User {
     chargebacksCount: number;
   }): void {
     if (!params.id) {
-      throw new DomainError('User ID is required', 'INVALID_NAME');
+      throw new DomainError('User ID is required', 'INVALID_OWNER');
     }
 
     if (!ALL_MARKETPLACE_ROLES.has(params.role)) {
