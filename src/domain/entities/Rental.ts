@@ -225,7 +225,20 @@ export class Rental {
     return this._disputeOpen;
   }
 
+  isTerminal(): boolean {
+    return (
+      this._escrowStatus === EscrowStatus.FUNDS_RELEASED_TO_OWNER ||
+      this._escrowStatus === EscrowStatus.REFUNDED
+    );
+  }
+
   confirmReturn(): void {
+    if (this._returnConfirmed) {
+      throw new DomainError(
+        'Return has already been confirmed',
+        'INVALID_STATE_TRANSITION',
+      );
+    }
     if (
       this._escrowStatus !== EscrowStatus.EXTERNAL_PAYMENT_CAPTURED &&
       this._escrowStatus !== EscrowStatus.DISPUTED
@@ -285,8 +298,8 @@ export class Rental {
   }
 
   markDisputed(): void {
-    this._disputeOpen = true;
     this.transitionTo(EscrowStatus.DISPUTED);
+    this._disputeOpen = true;
   }
 
   resolveDispute(): void {
@@ -316,6 +329,12 @@ export class Rental {
   }
 
   markRefunded(): void {
+    if (this._escrowStatus === EscrowStatus.FUNDS_RELEASED_TO_OWNER) {
+      throw new DomainError(
+        'Cannot refund after funds have been released to owner',
+        'INVALID_ESCROW_TRANSITION',
+      );
+    }
     this.transitionTo(EscrowStatus.REFUNDED);
   }
 }

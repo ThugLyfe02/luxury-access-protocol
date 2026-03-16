@@ -29,6 +29,8 @@ export class MarketplacePaymentService {
       { rentalId: rental.id },
     );
 
+    this.rejectIfTerminal(rental);
+
     if (!rental.externalPaymentIntentId) {
       throw new DomainError(
         'Cannot authorize payment without external payment intent',
@@ -49,6 +51,8 @@ export class MarketplacePaymentService {
       'handle_payment_captured',
       { rentalId: rental.id },
     );
+
+    this.rejectIfTerminal(rental);
 
     if (!rental.externalPaymentIntentId) {
       throw new DomainError(
@@ -81,6 +85,8 @@ export class MarketplacePaymentService {
       { rentalId: rental.id },
     );
 
+    this.rejectIfTerminal(rental);
+
     if (!rental.externalPaymentIntentId) {
       throw new DomainError(
         'Cannot refund payment without external payment intent',
@@ -112,13 +118,17 @@ export class MarketplacePaymentService {
       { rentalId: rental.id },
     );
 
+    this.rejectIfTerminal(rental);
+
     rental.markDisputed();
   }
 
   /**
    * Handle dispute resolved — clears the dispute lock.
-   * Does NOT automatically release funds. Release requires separate
-   * explicit action through ReleaseFundsService with all gates satisfied.
+   * Does NOT automatically release funds or transition state.
+   * The rental remains in DISPUTED escrow status with disputeOpen=false.
+   * To proceed toward release, the rental must be explicitly transitioned
+   * back to CAPTURED state via restoreToCaptured(). No magical release path.
    */
   async handleDisputeResolved(rental: Rental): Promise<void> {
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
@@ -126,12 +136,9 @@ export class MarketplacePaymentService {
       { rentalId: rental.id },
     );
 
-    rental.resolveDispute();
+    this.rejectIfTerminal(rental);
 
-    // After dispute resolution, rental returns to DISPUTED status.
-    // If the dispute was resolved in favor of continuing, the rental
-    // must be explicitly transitioned back to CAPTURED state.
-    // This is intentionally NOT automatic — no magical release path.
+    rental.resolveDispute();
   }
 
   /**
@@ -144,15 +151,55 @@ export class MarketplacePaymentService {
       { rentalId: rental.id },
     );
 
+    this.rejectIfTerminal(rental);
+
     rental.confirmReturn();
   }
 
   /**
+   * Restore a disputed rental to CAPTURED state after dispute resolution.
+   * Requires: dispute must be resolved (disputeOpen === false) and
+   * current escrow status must be DISPUTED.
+   * This is the only path from DISPUTED back to the normal release flow.
+   */
+  async restoreDisputedToCaptured(rental: Rental): Promise<void> {
+    RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
+      'restore_disputed_to_captured',
+      { rentalId: rental.id },
+    );
+
+    this.rejectIfTerminal(rental);
+
+    if (rental.escrowStatus !== EscrowStatus.DISPUTED) {
+      throw new DomainError(
+        'Can only restore to captured from DISPUTED state',
+        'INVALID_ESCROW_TRANSITION',
+      );
+    }
+
+    rental.restoreToCaptured();
+  }
+
+  private rejectIfTerminal(rental: Rental): void {
+    if (rental.isTerminal()) {
+      throw new DomainError(
+        `Rental ${rental.id} is in terminal state ${rental.escrowStatus} — no further transitions allowed`,
+        'INVALID_ESCROW_TRANSITION',
+      );
+    }
+  }
+
+  /**
    * Instruct Stripe Connect to transfer owner's share to their
-   * connected account. This is the release path — platform instructs
-   * the external provider, it never holds or moves principal itself.
+   * connected account. The platform instructs the external provider
+   * to move funds — it never holds or moves principal itself.
    *
-   * ALL preconditions are checked before instructing the transfer.
+   * ALL preconditions are verified before instructing the transfer.
+   * The external transfer is executed BEFORE the entity transitions
+   * to the terminal FUNDS_RELEASED_TO_OWNER state. This ordering
+   * ensures that if the external provider fails, the rental remains
+   * in CAPTURED state and the operation can be retried.
+   *
    * This method hard-fails if any gate is unsatisfied.
    */
   async releaseToOwner(params: {
@@ -166,7 +213,15 @@ export class MarketplacePaymentService {
       { rentalId: params.rental.id, amount: params.ownerShareAmount },
     );
 
-    // Gate 1: Payment must be captured (entity-enforced via FSM)
+    // Gate 1: Rental must not already be in a terminal state
+    if (params.rental.isTerminal()) {
+      throw new DomainError(
+        'Cannot release funds: rental is in a terminal state',
+        'INVALID_ESCROW_TRANSITION',
+      );
+    }
+
+    // Gate 2: Payment must be captured (entity-enforced via FSM)
     if (params.rental.escrowStatus !== EscrowStatus.EXTERNAL_PAYMENT_CAPTURED) {
       throw new DomainError(
         'Cannot release funds: external payment not in captured state',
@@ -174,7 +229,7 @@ export class MarketplacePaymentService {
       );
     }
 
-    // Gate 2: Return must be confirmed (entity-enforced)
+    // Gate 3: Return must be confirmed (entity-enforced)
     if (!params.rental.returnConfirmed) {
       throw new DomainError(
         'Cannot release funds without confirmed return',
@@ -182,7 +237,7 @@ export class MarketplacePaymentService {
       );
     }
 
-    // Gate 3: No open dispute (entity-enforced)
+    // Gate 4: No open dispute (entity-enforced)
     if (params.rental.disputeOpen) {
       throw new DomainError(
         'Cannot release funds while dispute is open',
@@ -190,7 +245,7 @@ export class MarketplacePaymentService {
       );
     }
 
-    // Gate 4: No blocking manual review cases
+    // Gate 5: No blocking manual review cases
     const blockingCases = params.blockingReviewCases.filter(
       (c) => c.isBlocking(),
     );
@@ -201,7 +256,7 @@ export class MarketplacePaymentService {
       );
     }
 
-    // Gate 5: Owner connected account must be provided
+    // Gate 6: Owner connected account must be provided
     if (!params.ownerConnectedAccountId) {
       throw new DomainError(
         'Owner connected account ID is required for transfer',
@@ -209,7 +264,7 @@ export class MarketplacePaymentService {
       );
     }
 
-    // Gate 6: Share amount must be positive
+    // Gate 7: Share amount must be positive and finite
     if (params.ownerShareAmount <= 0 || !Number.isFinite(params.ownerShareAmount)) {
       throw new DomainError(
         'Owner share amount must be a positive finite number',
@@ -217,15 +272,34 @@ export class MarketplacePaymentService {
       );
     }
 
-    // Entity-level transition (double-checks return + dispute gates)
-    params.rental.releaseFunds();
+    // Gate 8: Share amount must not exceed rental price (ceiling check)
+    if (params.ownerShareAmount > params.rental.rentalPrice) {
+      throw new DomainError(
+        'Owner share amount cannot exceed the rental price',
+        'INVALID_PAYMENT_TRANSITION',
+      );
+    }
 
-    // Instruct external provider to transfer to owner's connected account
+    // Gate 9: External payment intent must exist (defense-in-depth)
+    if (!params.rental.externalPaymentIntentId) {
+      throw new DomainError(
+        'Cannot release funds without external payment intent',
+        'INVALID_PAYMENT_TRANSITION',
+      );
+    }
+
+    // Instruct external provider to transfer to owner's connected account.
+    // This is executed BEFORE the entity transition so that if the external
+    // provider fails, the rental remains in CAPTURED state and can be retried.
     const { transferId } = await this.paymentProvider.transferToConnectedAccount({
       amount: params.ownerShareAmount,
       connectedAccountId: params.ownerConnectedAccountId,
       rentalId: params.rental.id,
     });
+
+    // Entity-level transition to terminal FUNDS_RELEASED_TO_OWNER state.
+    // This also re-checks return + dispute gates at the entity level.
+    params.rental.releaseFunds();
 
     return { transferId };
   }
