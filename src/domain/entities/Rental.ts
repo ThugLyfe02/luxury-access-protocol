@@ -43,6 +43,8 @@ export class Rental {
   readonly createdAt: Date;
   private _escrowStatus: EscrowStatus;
   private _externalPaymentIntentId: string | null;
+  private _returnConfirmed: boolean;
+  private _disputeOpen: boolean;
 
   constructor(params: {
     id: string;
@@ -78,6 +80,8 @@ export class Rental {
     this.rentalPrice = params.rentalPrice;
     this._escrowStatus = params.escrowStatus;
     this._externalPaymentIntentId = params.externalPaymentIntentId;
+    this._returnConfirmed = false;
+    this._disputeOpen = false;
     this.createdAt = params.createdAt;
   }
 
@@ -87,6 +91,27 @@ export class Rental {
 
   get externalPaymentIntentId(): string | null {
     return this._externalPaymentIntentId;
+  }
+
+  get returnConfirmed(): boolean {
+    return this._returnConfirmed;
+  }
+
+  get disputeOpen(): boolean {
+    return this._disputeOpen;
+  }
+
+  confirmReturn(): void {
+    if (
+      this._escrowStatus !== EscrowStatus.EXTERNAL_PAYMENT_CAPTURED &&
+      this._escrowStatus !== EscrowStatus.DISPUTED
+    ) {
+      throw new DomainError(
+        'Return can only be confirmed after payment is captured',
+        'INVALID_STATE_TRANSITION',
+      );
+    }
+    this._returnConfirmed = true;
   }
 
   private transitionTo(nextStatus: EscrowStatus): void {
@@ -120,11 +145,34 @@ export class Rental {
   }
 
   releaseFunds(): void {
+    if (!this._returnConfirmed) {
+      throw new DomainError(
+        'Cannot release funds without confirmed return',
+        'RETURN_NOT_CONFIRMED',
+      );
+    }
+    if (this._disputeOpen) {
+      throw new DomainError(
+        'Cannot release funds while dispute is open',
+        'DISPUTE_LOCK',
+      );
+    }
     this.transitionTo(EscrowStatus.FUNDS_RELEASED_TO_OWNER);
   }
 
   markDisputed(): void {
+    this._disputeOpen = true;
     this.transitionTo(EscrowStatus.DISPUTED);
+  }
+
+  resolveDispute(): void {
+    if (!this._disputeOpen) {
+      throw new DomainError(
+        'No open dispute to resolve',
+        'INVALID_STATE_TRANSITION',
+      );
+    }
+    this._disputeOpen = false;
   }
 
   markRefunded(): void {

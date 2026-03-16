@@ -25,4 +25,14 @@ export class StripePaymentProvider implements PaymentProvider {
   ): Promise<{ refunded: boolean }> {
     throw new Error('Not implemented');
   }
+
+  async transferToConnectedAccount(
+    _params: {
+      amount: number;
+      connectedAccountId: string;
+      rentalId: string;
+    },
+  ): Promise<{ transferId: string }> {
+    throw new Error('Not implemented');
+  }
 }
