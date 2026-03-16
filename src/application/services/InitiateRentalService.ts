@@ -14,6 +14,11 @@ import { RiskPolicy } from '../../domain/services/RiskPolicy';
 import { UnitEconomicsGuard } from '../../domain/services/UnitEconomicsGuard';
 import { RiskAnalyzer, RiskSignal } from '../../domain/services/RiskAnalyzer';
 import { TierEngine } from '../../domain/services/TierEngine';
+import {
+  PlatformExposureEngine,
+  ExposureSnapshot,
+  ExposureConfig,
+} from '../../domain/services/PlatformExposureEngine';
 import { Actor } from '../auth/Actor';
 import { AuthorizationGuard } from '../auth/AuthorizationGuard';
 
@@ -43,6 +48,8 @@ export class InitiateRentalService {
       watchInsurance: InsurancePolicy | null;
       renterTier: RenterTier;
       recentRentalTimestamps: Date[];
+      exposureSnapshot: ExposureSnapshot;
+      exposureConfig: ExposureConfig;
       now: Date;
     },
   ): Promise<InitiateRentalResult> {
@@ -56,6 +63,8 @@ export class InitiateRentalService {
       watchInsurance,
       renterTier,
       recentRentalTimestamps,
+      exposureSnapshot,
+      exposureConfig,
       now,
     } = input;
 
@@ -94,7 +103,22 @@ export class InitiateRentalService {
       rentalPrice * 0.20,
     );
 
-    // 8. Risk analysis — advisory, may create review case
+    // 8. Platform exposure / capital protection — hard stop
+    const proposedInsuranceCoverage =
+      watchInsurance && watchInsurance.isActive(now)
+        ? watchInsurance.netCoverage()
+        : 0;
+
+    PlatformExposureEngine.assertRentalWithinExposureLimits(
+      exposureConfig,
+      exposureSnapshot,
+      {
+        watchMarketValue: watch.marketValue,
+        insuranceCoverage: proposedInsuranceCoverage,
+      },
+    );
+
+    // 9. Risk analysis — advisory, may create review case
     const { signals: riskSignals, requiresManualReview } =
       RiskAnalyzer.analyzeRentalRisk({
         renter,
@@ -106,7 +130,7 @@ export class InitiateRentalService {
         now,
       });
 
-    // 9. If risk analysis requires manual review with CRITICAL signals, block
+    // 10. If risk analysis requires manual review with CRITICAL signals, block
     const hasCriticalSignal = riskSignals.some(
       (s) => s.severity === ReviewSeverity.CRITICAL,
     );
@@ -117,7 +141,7 @@ export class InitiateRentalService {
       );
     }
 
-    // 10. Create rental entity
+    // 11. Create rental entity
     const rental = Rental.create({
       id: crypto.randomUUID(),
       renterId: renter.id,
@@ -126,18 +150,18 @@ export class InitiateRentalService {
       createdAt: now,
     });
 
-    // 11. Create review case if risk analysis flagged it (non-blocking HIGH/MEDIUM/LOW)
+    // 12. Create review case if risk analysis flagged it (non-blocking HIGH/MEDIUM/LOW)
     const reviewCase = requiresManualReview
       ? RiskAnalyzer.createReviewCase(rental.id, riskSignals, now)
       : null;
 
-    // 12. External checkout session via payment provider
+    // 13. External checkout session via payment provider
     const { sessionId } = await this.paymentProvider.createCheckoutSession(
       rental.id,
       rentalPrice,
     );
 
-    // 13. Transition to awaiting external payment
+    // 14. Transition to awaiting external payment
     rental.startExternalPayment(sessionId);
 
     return {
