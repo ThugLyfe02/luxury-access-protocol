@@ -1,9 +1,11 @@
-import { DomainError } from '../../domain/errors/DomainError';
 import { EscrowStatus } from '../../domain/enums/EscrowStatus';
 import { PaymentProvider } from '../../domain/interfaces/PaymentProvider';
 import { User } from '../../domain/entities/User';
 import { Watch } from '../../domain/entities/Watch';
 import { Rental } from '../../domain/entities/Rental';
+import { RegulatoryGuardrails } from '../../domain/services/RegulatoryGuardrails';
+import { RiskPolicy } from '../../domain/services/RiskPolicy';
+import { UnitEconomicsGuard } from '../../domain/services/UnitEconomicsGuard';
 
 export class InitiateRentalService {
   private readonly paymentProvider: PaymentProvider;
@@ -19,20 +21,23 @@ export class InitiateRentalService {
   }): Promise<Rental> {
     const { renter, watch, rentalPrice } = input;
 
-    if (renter.id === watch.ownerId) {
-      throw new DomainError(
-        'Renter cannot be the owner of the watch',
-        'INVALID_RENTAL_PARTIES',
-      );
-    }
+    // 1. Anti-custody firewall
+    RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
+      'initiate_rental',
+      { rentalPrice },
+    );
 
-    if (rentalPrice <= 0) {
-      throw new DomainError(
-        'Rental price must be greater than zero',
-        'INVALID_VALUATION',
-      );
-    }
+    // 2. Risk policy gate (includes self-rental, high-risk, verification, ceiling)
+    RiskPolicy.ensureCanInitiateRental(renter, watch, rentalPrice);
 
+    // 3. Unit economics viability (platform gross = 20% of rental charge)
+    UnitEconomicsGuard.assertRentalEconomicsViable(
+      rentalPrice,
+      watch.marketValue,
+      rentalPrice * 0.20,
+    );
+
+    // 4. Create rental entity
     const rental = new Rental({
       id: crypto.randomUUID(),
       renterId: renter.id,
@@ -43,11 +48,13 @@ export class InitiateRentalService {
       createdAt: new Date(),
     });
 
+    // 5. External checkout session
     const { sessionId } = await this.paymentProvider.createCheckoutSession(
       rental.id,
       rentalPrice,
     );
 
+    // 6. Transition to awaiting payment
     rental.startExternalPayment(sessionId);
 
     return rental;
