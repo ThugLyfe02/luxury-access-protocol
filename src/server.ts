@@ -1,6 +1,7 @@
 import { createApp } from './http/app';
 import { InitiateRentalService } from './application/services/InitiateRentalService';
 import { MarketplacePaymentService } from './application/services/MarketplacePaymentService';
+import { AdminControlService } from './application/services/AdminControlService';
 import { StripePaymentProvider } from './infrastructure/payments/StripePaymentProvider';
 import { StripeWebhookHandler } from './infrastructure/payments/StripeWebhookHandler';
 import { loadStripeConfig } from './infrastructure/payments/stripeConfig';
@@ -11,9 +12,16 @@ import { InMemoryKycRepository } from './infrastructure/repositories/InMemoryKyc
 import { InMemoryInsuranceRepository } from './infrastructure/repositories/InMemoryInsuranceRepository';
 import { InMemoryReviewRepository } from './infrastructure/repositories/InMemoryReviewRepository';
 import { InMemoryClaimRepository } from './infrastructure/repositories/InMemoryClaimRepository';
+import { InMemoryFreezeRepository } from './infrastructure/repositories/InMemoryFreezeRepository';
+import { InMemoryAuditLogRepository } from './infrastructure/repositories/InMemoryAuditLogRepository';
+import { InMemoryManualReviewRepository } from './infrastructure/repositories/InMemoryManualReviewRepository';
 import { PostgresUserRepository } from './infrastructure/repositories/PostgresUserRepository';
 import { PostgresWatchRepository } from './infrastructure/repositories/PostgresWatchRepository';
 import { PostgresRentalRepository } from './infrastructure/repositories/PostgresRentalRepository';
+import { PostgresClaimRepository } from './infrastructure/repositories/PostgresClaimRepository';
+import { PostgresManualReviewRepository } from './infrastructure/repositories/PostgresManualReviewRepository';
+import { PostgresFreezeRepository } from './infrastructure/repositories/PostgresFreezeRepository';
+import { PostgresAuditLogRepository } from './infrastructure/repositories/PostgresAuditLogRepository';
 import { ExposureConfig } from './domain/services/PlatformExposureEngine';
 import { ExposureSnapshotService } from './application/services/ExposureSnapshotService';
 import { AuditLog } from './application/audit/AuditLog';
@@ -21,14 +29,23 @@ import { InMemoryAuditSink } from './infrastructure/audit/InMemoryAuditSink';
 import {
   WebhookController,
   InMemoryProcessedWebhookEventStore,
+  ProcessedWebhookEventStore,
   WebhookVerifier,
 } from './http/webhookController';
+import { IdempotencyStore } from './http/idempotency/IdempotencyStore';
 import { InMemoryIdempotencyStore } from './http/idempotency/IdempotencyStore';
 import { InMemoryConnectedAccountStore } from './http/routes/ownerRoutes';
 import { PaymentProvider } from './domain/interfaces/PaymentProvider';
 import { UserRepository } from './domain/interfaces/UserRepository';
 import { WatchRepository } from './domain/interfaces/WatchRepository';
 import { RentalRepository } from './domain/interfaces/RentalRepository';
+import { ClaimRepository } from './domain/interfaces/ClaimRepository';
+import { ReviewRepository } from './domain/interfaces/ReviewRepository';
+import { FreezeRepository } from './domain/interfaces/FreezeRepository';
+import { AuditLogRepository } from './domain/interfaces/AuditLogRepository';
+import { ManualReviewRepository } from './domain/interfaces/ManualReviewRepository';
+import { PostgresIdempotencyStore } from './infrastructure/persistence/PostgresIdempotencyStore';
+import { PostgresWebhookEventStore } from './infrastructure/persistence/PostgresWebhookEventStore';
 import { runMigration } from './infrastructure/db/migrate';
 import { closePool } from './infrastructure/db/connection';
 import { JwtTokenService } from './auth/JwtTokenService';
@@ -60,21 +77,41 @@ const tokenService = new JwtTokenService(authConfig);
 let userRepo: UserRepository;
 let watchRepo: WatchRepository;
 let rentalRepo: RentalRepository;
+let claimRepo: ClaimRepository;
+let reviewRepo: ReviewRepository;
+let freezeRepo: FreezeRepository;
+let auditLogRepo: AuditLogRepository;
+let manualReviewRepo: ManualReviewRepository;
+let idempotencyStore: IdempotencyStore;
+let processedEvents: ProcessedWebhookEventStore;
 
 if (usePostgres) {
   userRepo = new PostgresUserRepository();
   watchRepo = new PostgresWatchRepository();
   rentalRepo = new PostgresRentalRepository();
+  claimRepo = new PostgresClaimRepository();
+  const pgReviewRepo = new PostgresManualReviewRepository();
+  reviewRepo = pgReviewRepo;
+  manualReviewRepo = pgReviewRepo;
+  freezeRepo = new PostgresFreezeRepository();
+  auditLogRepo = new PostgresAuditLogRepository();
+  idempotencyStore = new PostgresIdempotencyStore();
+  processedEvents = new PostgresWebhookEventStore();
 } else {
   userRepo = new InMemoryUserRepository();
   watchRepo = new InMemoryWatchRepository();
   rentalRepo = new InMemoryRentalRepository();
+  claimRepo = new InMemoryClaimRepository();
+  reviewRepo = new InMemoryReviewRepository();
+  manualReviewRepo = new InMemoryManualReviewRepository();
+  freezeRepo = new InMemoryFreezeRepository();
+  auditLogRepo = new InMemoryAuditLogRepository();
+  idempotencyStore = new InMemoryIdempotencyStore();
+  processedEvents = new InMemoryProcessedWebhookEventStore();
 }
 
 const kycRepo = new InMemoryKycRepository();
 const insuranceRepo = new InMemoryInsuranceRepository();
-const reviewRepo = new InMemoryReviewRepository();
-const claimRepo = new InMemoryClaimRepository();
 
 // --- Infrastructure: Payment Provider ---
 let paymentProvider: PaymentProvider;
@@ -115,13 +152,12 @@ const auditSink = new InMemoryAuditSink();
 const auditLog = new AuditLog(auditSink);
 
 // --- Stores ---
-const processedEvents = new InMemoryProcessedWebhookEventStore();
-const idempotencyStore = new InMemoryIdempotencyStore();
 const connectedAccountStore = new InMemoryConnectedAccountStore();
 
 // --- Application Services ---
 const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog);
 const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog);
+const adminControlService = new AdminControlService(freezeRepo, auditLogRepo, manualReviewRepo);
 
 // --- HTTP Controllers ---
 const webhookController = new WebhookController({
@@ -155,6 +191,9 @@ const app = createApp({
     paymentProvider,
     userRepo,
     connectedAccountStore,
+  },
+  admin: {
+    adminControlService,
   },
   webhookController,
   tokenService,

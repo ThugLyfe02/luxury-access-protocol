@@ -136,3 +136,149 @@ CREATE TABLE IF NOT EXISTS processed_webhook_events (
 
 CREATE INDEX IF NOT EXISTS idx_processed_webhook_events_processed_at
   ON processed_webhook_events(processed_at);
+
+-- ============================================================
+-- ENUM: insurance_claim_status
+-- ============================================================
+
+DO $$ BEGIN
+  CREATE TYPE insurance_claim_status AS ENUM (
+    'FILED', 'UNDER_REVIEW', 'APPROVED', 'DENIED', 'PAID_OUT'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================
+-- ENUM: review_status
+-- ============================================================
+
+DO $$ BEGIN
+  CREATE TYPE review_status AS ENUM (
+    'OPEN', 'IN_REVIEW', 'APPROVED', 'REJECTED'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================
+-- ENUM: review_severity
+-- ============================================================
+
+DO $$ BEGIN
+  CREATE TYPE review_severity AS ENUM (
+    'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================
+-- ENUM: freezable_entity_type
+-- ============================================================
+
+DO $$ BEGIN
+  CREATE TYPE freezable_entity_type AS ENUM ('USER', 'WATCH', 'RENTAL');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================
+-- INSURANCE CLAIMS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS claims (
+  id              UUID PRIMARY KEY,
+  policy_id       TEXT                   NOT NULL,
+  rental_id       TEXT                   NOT NULL,
+  watch_id        TEXT                   NOT NULL,
+  claim_amount    NUMERIC(12,2)          NOT NULL CHECK (claim_amount > 0),
+  reason          TEXT                   NOT NULL,
+  filed_at        TIMESTAMPTZ            NOT NULL,
+  status          insurance_claim_status NOT NULL DEFAULT 'FILED',
+  reviewed_by     TEXT,
+  reviewed_at     TIMESTAMPTZ,
+  paid_out_at     TIMESTAMPTZ,
+  payout_amount   NUMERIC(12,2),
+  denial_reason   TEXT,
+  created_at      TIMESTAMPTZ            NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ            NOT NULL DEFAULT now(),
+  version         INTEGER                NOT NULL DEFAULT 0 CHECK (version >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_claims_rental_id ON claims(rental_id);
+CREATE INDEX IF NOT EXISTS idx_claims_watch_id ON claims(watch_id);
+CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
+
+-- ============================================================
+-- MANUAL REVIEWS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS manual_reviews (
+  id              UUID PRIMARY KEY,
+  rental_id       TEXT                NOT NULL,
+  severity        review_severity     NOT NULL,
+  reason          TEXT                NOT NULL,
+  status          review_status       NOT NULL DEFAULT 'OPEN',
+  assigned_to     TEXT,
+  resolved_by     TEXT,
+  resolved_at     TIMESTAMPTZ,
+  resolution      TEXT,
+  freeze_targets  JSONB               NOT NULL DEFAULT '[]'::jsonb,
+  sla_deadline    TIMESTAMPTZ         NOT NULL,
+  notes           JSONB               NOT NULL DEFAULT '[]'::jsonb,
+  created_at      TIMESTAMPTZ         NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ         NOT NULL DEFAULT now(),
+  version         INTEGER             NOT NULL DEFAULT 0 CHECK (version >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_manual_reviews_rental_id ON manual_reviews(rental_id);
+CREATE INDEX IF NOT EXISTS idx_manual_reviews_status ON manual_reviews(status);
+
+-- ============================================================
+-- SYSTEM FREEZES
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS freezes (
+  id              UUID PRIMARY KEY,
+  entity_type     freezable_entity_type NOT NULL,
+  entity_id       TEXT                  NOT NULL,
+  reason          TEXT                  NOT NULL,
+  frozen_by       TEXT                  NOT NULL,
+  active          BOOLEAN               NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ           NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ           NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_freezes_entity
+  ON freezes(entity_type, entity_id)
+  WHERE active = TRUE;
+
+-- ============================================================
+-- AUDIT LOGS (APPEND-ONLY — NO UPDATE, NO DELETE)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id              UUID PRIMARY KEY,
+  actor_id        TEXT                NOT NULL,
+  action_type     TEXT                NOT NULL,
+  entity_type     TEXT                NOT NULL,
+  entity_id       TEXT                NOT NULL,
+  metadata        JSONB               NOT NULL DEFAULT '{}'::jsonb,
+  timestamp       TIMESTAMPTZ         NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_timestamp
+  ON audit_logs(actor_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_id
+  ON audit_logs(entity_id);
+
+-- ============================================================
+-- IDEMPOTENCY KEYS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key             TEXT PRIMARY KEY,
+  payload_hash    TEXT        NOT NULL,
+  response_status INTEGER     NOT NULL,
+  response_body   TEXT        NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Unique key is the PK itself — prevents duplicate inserts
