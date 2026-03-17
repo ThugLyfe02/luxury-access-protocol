@@ -183,7 +183,7 @@ describe('StripePaymentProvider error classification', () => {
       }
     });
 
-    it('classifies StripeAPIError as PROVIDER_UNAVAILABLE', async () => {
+    it('classifies StripeAPIError as PROVIDER_NETWORK_TIMEOUT (ambiguous) for state-changing ops', async () => {
       const provider = createProvider();
       const stripe = provider.getStripeInstance();
 
@@ -199,9 +199,9 @@ describe('StripePaymentProvider error classification', () => {
         expect.unreachable();
       } catch (error) {
         const pe = error as ProviderError;
-        expect(pe.code).toBe('PROVIDER_UNAVAILABLE');
+        expect(pe.code).toBe('PROVIDER_NETWORK_TIMEOUT');
         expect(pe.retryable).toBe(true);
-        expect(pe.ambiguous).toBe(false);
+        expect(pe.ambiguous).toBe(true);
       }
     });
 

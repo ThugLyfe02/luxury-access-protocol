@@ -330,9 +330,13 @@ export class StripePaymentProvider implements PaymentProvider {
       });
     }
     if (error instanceof Stripe.errors.StripeAPIError) {
+      // Stripe 5xx on a state-changing operation is ambiguous — the request
+      // may have been processed before the error response was generated.
+      // Use PROVIDER_NETWORK_TIMEOUT (which triggers ambiguous classification)
+      // for state-changing ops; PROVIDER_UNAVAILABLE (retryable) for reads.
       return new ProviderError({
         message: `${operation}: ${error.message}`,
-        code: 'PROVIDER_UNAVAILABLE',
+        code: isStateChanging ? 'PROVIDER_NETWORK_TIMEOUT' : 'PROVIDER_UNAVAILABLE',
         isStateChanging,
         stripeErrorType: error.type,
       });
