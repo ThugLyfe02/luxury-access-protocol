@@ -2,25 +2,15 @@ import { Request, Response } from 'express';
 import { MarketplacePaymentService } from '../application/services/MarketplacePaymentService';
 import { SystemActor } from '../application/auth/Actor';
 import { RentalRepository } from '../domain/interfaces/RentalRepository';
+import { Rental } from '../domain/entities/Rental';
 import { AuditLog } from '../application/audit/AuditLog';
 import { DomainError } from '../domain/errors/DomainError';
+import {
+  WebhookEventValidator,
+  PaymentEventType,
+} from '../domain/services/WebhookEventValidator';
 import { validateStripeWebhookBody } from './validation';
 import { sendError } from './errorMapper';
-
-/**
- * Supported Stripe webhook event types.
- *
- * Only events that map to reconstructed MarketplacePaymentService
- * methods are accepted. Unknown event types are acknowledged with
- * 200 but not processed (standard Stripe webhook best practice).
- */
-const SUPPORTED_EVENT_TYPES = new Set([
-  'payment_intent.authorized',
-  'payment_intent.captured',
-  'charge.refunded',
-  'charge.dispute.created',
-  'charge.dispute.closed',
-]);
 
 /**
  * HTTP controller for Stripe webhook callbacks.
@@ -32,24 +22,36 @@ const SUPPORTED_EVENT_TYPES = new Set([
  * - All domain guards remain active — the webhook cannot bypass FSM or auth
  * - No fund custody: we instruct the external provider, never hold principal
  *
+ * Hardening layers (defense-in-depth):
+ * 1. Event ID dedup — rejects already-processed events at the gate
+ * 2. WebhookEventValidator — pre-dispatch sequence/state validation
+ *    Distinguishes duplicate delivery from out-of-order from regression
+ * 3. Entity FSM — Rental.transitionTo() enforces VALID_TRANSITIONS
+ * 4. MarketplacePaymentService — auth + terminal + regulatory guards
+ * 5. Optimistic concurrency — repository save rejects stale writes
+ *
  * Known gap: Stripe signature verification (webhook secret + stripe-signature
  * header) is not implemented. In production this MUST be added before
- * this endpoint is exposed to the internet. Documented for next phase.
+ * this endpoint is exposed to the internet.
  */
 export class WebhookController {
   private readonly paymentService: MarketplacePaymentService;
   private readonly rentalRepo: RentalRepository;
+
   /**
-   * Tracks Stripe event IDs that have been successfully processed.
-   * This is a first-line dedup filter — if a retried webhook arrives
-   * with an event ID we've already processed, we immediately return
-   * 200 without touching the domain layer.
+   * Tracks Stripe event IDs that have been successfully processed,
+   * along with the rental ID they affected.
+   *
+   * Keyed by Stripe event ID → { rentalId, eventType, processedAt }.
    *
    * In production, this would be backed by a persistent store (e.g.,
    * a processed_events table with a unique constraint on event_id).
-   * The in-memory Set is sufficient for the current reconstruction stage.
+   * The in-memory Map is sufficient for the current reconstruction stage.
    */
-  private readonly processedEventIds = new Set<string>();
+  private readonly processedEvents = new Map<
+    string,
+    { rentalId: string; eventType: string; processedAt: Date }
+  >();
 
   private readonly auditLog: AuditLog;
 
@@ -69,151 +71,250 @@ export class WebhookController {
    * Receives Stripe webhook events and delegates to the appropriate
    * MarketplacePaymentService handler.
    *
-   * Idempotency: Stripe may retry webhook delivery. The domain FSM
-   * rejects duplicate transitions (e.g., marking AUTHORIZED when
-   * already AUTHORIZED throws INVALID_ESCROW_TRANSITION). The controller
-   * catches this and returns 200 to prevent Stripe from retrying
-   * indefinitely. This is a deliberate idempotency-aware design:
-   * the domain enforces "at-most-once" semantics, and the HTTP layer
-   * translates FSM rejection of duplicate events into success acks.
+   * Processing pipeline:
+   * 1. Validate event shape (transport boundary)
+   * 2. Event ID dedup (first-line replay filter)
+   * 3. Reject unsupported event types
+   * 4. Resolve rental by external payment ID
+   * 5. Pre-dispatch state validation (sequence + duplicate + regression)
+   * 6. Dispatch to MarketplacePaymentService
+   * 7. Persist rental state
+   * 8. Record event as processed
+   * 9. Audit success
+   *
+   * A retried or malicious webhook cannot put a rental into an
+   * impossible state — every layer rejects invalid transitions
+   * independently.
    */
   async handleStripeEvent(req: Request, res: Response): Promise<void> {
-    try {
-      // 1. Validate event shape
-      const validated = validateStripeWebhookBody(req.body);
-      if (!validated.valid) {
-        res.status(400).json({ error: { code: 'VALIDATION_ERROR', details: validated.errors } });
-        return;
-      }
+    // 1. Validate event shape
+    const validated = validateStripeWebhookBody(req.body);
+    if (!validated.valid) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', details: validated.errors } });
+      return;
+    }
 
-      const event = validated.value;
+    const event = validated.value;
+    const actor: SystemActor = {
+      kind: 'system',
+      source: `stripe_webhook:${event.type}`,
+    };
 
-      // 2. Event ID dedup — if we've already processed this event, ack immediately
-      if (this.processedEventIds.has(event.id)) {
-        this.auditLog.record({
-          actor: { kind: 'system', source: `stripe_webhook:${event.type}` },
-          entityType: 'StripeEvent',
-          entityId: event.id,
-          action: 'webhook_dedup_skip',
-          outcome: 'blocked',
-          errorCode: 'DUPLICATE_REQUEST',
-          errorMessage: 'Event already processed',
-          externalRef: event.id,
-        });
-        res.status(200).json({ received: true, processed: false, reason: 'already_processed' });
-        return;
-      }
+    // 2. Event ID dedup — already processed this exact event
+    const priorProcessing = this.processedEvents.get(event.id);
+    if (priorProcessing) {
+      this.auditLog.record({
+        actor,
+        entityType: 'Rental',
+        entityId: priorProcessing.rentalId,
+        action: 'webhook_event_id_dedup',
+        outcome: 'blocked',
+        errorCode: 'DUPLICATE_REQUEST',
+        errorMessage: `Event ${event.id} already processed for rental ${priorProcessing.rentalId} at ${priorProcessing.processedAt.toISOString()}`,
+        externalRef: event.id,
+      });
+      res.status(200).json({ received: true, processed: false, reason: 'already_processed' });
+      return;
+    }
 
-      // 3. Acknowledge unsupported event types without error
-      if (!SUPPORTED_EVENT_TYPES.has(event.type)) {
-        res.status(200).json({ received: true, processed: false });
-        return;
-      }
+    // 3. Check if event type is supported
+    if (!WebhookEventValidator.isSupportedEventType(event.type)) {
+      this.auditLog.record({
+        actor,
+        entityType: 'StripeEvent',
+        entityId: event.id,
+        action: 'webhook_unsupported_event_type',
+        outcome: 'blocked',
+        errorMessage: `Unsupported event type: ${event.type}`,
+        externalRef: event.id,
+      });
+      res.status(200).json({ received: true, processed: false, reason: 'unsupported_event_type' });
+      return;
+    }
 
-      // 4. Look up the rental by the Stripe object ID (payment intent / charge ID)
-      const stripeObjectId = event.data.object.id;
-      const rental = await this.rentalRepo.findByExternalPaymentIntentId(stripeObjectId);
+    const eventType = event.type as PaymentEventType;
+    const stripeObjectId = event.data.object.id;
 
-      if (!rental) {
-        // No matching rental — could be an event for a different product
-        // or a stale webhook. Acknowledge to prevent retries.
-        res.status(200).json({ received: true, processed: false });
-        return;
-      }
+    // 4. Look up the rental by the Stripe object ID
+    const rental = await this.rentalRepo.findByExternalPaymentIntentId(stripeObjectId);
 
-      // 5. Build system actor for webhook context
-      const actor: SystemActor = {
-        kind: 'system',
-        source: `stripe_webhook:${event.type}`,
-      };
+    if (!rental) {
+      this.auditLog.record({
+        actor,
+        entityType: 'StripeEvent',
+        entityId: event.id,
+        action: 'webhook_rental_not_found',
+        outcome: 'blocked',
+        errorMessage: `No rental found for external payment ID: ${stripeObjectId}`,
+        externalRef: stripeObjectId,
+      });
+      res.status(200).json({ received: true, processed: false, reason: 'rental_not_found' });
+      return;
+    }
 
-      // 6. Dispatch to the appropriate handler
-      await this.dispatchEvent(actor, event.type, rental);
+    // 5. Pre-dispatch state validation
+    const beforeStatus = rental.escrowStatus;
+    const validation = WebhookEventValidator.validate(
+      eventType,
+      rental.escrowStatus,
+      rental.disputeOpen,
+    );
 
-      // 7. Persist updated rental state
-      await this.rentalRepo.save(rental);
-
-      // 8. Record event as processed (after successful save)
-      this.processedEventIds.add(event.id);
-
-      // 9. Audit: webhook successfully processed
+    if (validation.outcome === 'duplicate') {
       this.auditLog.record({
         actor,
         entityType: 'Rental',
         entityId: rental.id,
-        action: `webhook_processed:${event.type}`,
-        outcome: 'success',
-        afterState: rental.escrowStatus,
+        action: 'webhook_duplicate_delivery',
+        outcome: 'blocked',
+        beforeState: rental.escrowStatus,
+        errorCode: 'DUPLICATE_REQUEST',
+        errorMessage: validation.reason,
         externalRef: event.id,
       });
+      // Mark as processed to prevent future retries from hitting validation again
+      this.processedEvents.set(event.id, {
+        rentalId: rental.id,
+        eventType: event.type,
+        processedAt: new Date(),
+      });
+      res.status(200).json({ received: true, processed: false, reason: 'duplicate_event' });
+      return;
+    }
 
-      res.status(200).json({ received: true, processed: true });
+    if (validation.outcome === 'rejected') {
+      this.auditLog.record({
+        actor,
+        entityType: 'Rental',
+        entityId: rental.id,
+        action: 'webhook_sequence_rejected',
+        outcome: 'blocked',
+        beforeState: rental.escrowStatus,
+        errorCode: validation.code,
+        errorMessage: validation.reason,
+        externalRef: event.id,
+      });
+      // Do NOT ack with 200 — this is a genuinely invalid event that
+      // should not be silently swallowed. Return 409 Conflict so that
+      // operational monitoring can detect sequence anomalies.
+      res.status(409).json({
+        error: {
+          code: validation.code,
+          message: validation.reason,
+        },
+      });
+      return;
+    }
+
+    // 6. Dispatch to MarketplacePaymentService
+    try {
+      await this.dispatchEvent(actor, eventType, rental);
     } catch (error) {
-      // Idempotency handling: if the domain rejects a transition because
-      // the rental is already in the target state (duplicate webhook),
-      // we return 200 to stop Stripe from retrying.
-      if (this.isDuplicateTransitionError(error)) {
-        if (error instanceof DomainError) {
-          this.auditLog.record({
-            actor: { kind: 'system', source: 'stripe_webhook' },
-            entityType: 'Rental',
-            entityId: 'unknown',
-            action: 'webhook_duplicate_transition',
-            outcome: 'blocked',
-            errorCode: error.code,
-            errorMessage: error.message,
-          });
-        }
-        res.status(200).json({ received: true, processed: false, reason: 'duplicate_event' });
+      // Domain layer rejected the transition despite pre-validation passing.
+      // This is a defense-in-depth catch — the entity FSM is the ultimate authority.
+      if (error instanceof DomainError) {
+        this.auditLog.record({
+          actor,
+          entityType: 'Rental',
+          entityId: rental.id,
+          action: `webhook_dispatch_rejected:${event.type}`,
+          outcome: 'blocked',
+          beforeState: beforeStatus,
+          errorCode: error.code,
+          errorMessage: error.message,
+          externalRef: event.id,
+        });
+      }
+      sendError(res, error);
+      return;
+    }
+
+    // 7. Persist updated rental state
+    try {
+      await this.rentalRepo.save(rental);
+    } catch (error) {
+      // Version conflict = concurrent write. Do NOT mark as processed —
+      // the event should be retried.
+      if (error instanceof DomainError && error.code === 'VERSION_CONFLICT') {
+        this.auditLog.record({
+          actor,
+          entityType: 'Rental',
+          entityId: rental.id,
+          action: 'webhook_save_version_conflict',
+          outcome: 'error',
+          beforeState: beforeStatus,
+          afterState: rental.escrowStatus,
+          errorCode: error.code,
+          errorMessage: error.message,
+          externalRef: event.id,
+        });
+        res.status(409).json({
+          error: { code: 'VERSION_CONFLICT', message: 'Concurrent modification detected; retry the event' },
+        });
         return;
       }
-
-      sendError(res, error);
+      throw error;
     }
-  }
 
-  private async dispatchEvent(
-    actor: SystemActor,
-    eventType: string,
-    rental: import('../domain/entities/Rental').Rental,
-  ): Promise<void> {
-    switch (eventType) {
-      case 'payment_intent.authorized':
-        await this.paymentService.handlePaymentAuthorized(actor, rental);
-        break;
-      case 'payment_intent.captured':
-        await this.paymentService.handlePaymentCaptured(actor, rental);
-        break;
-      case 'charge.refunded':
-        await this.paymentService.handlePaymentRefunded(actor, rental);
-        break;
-      case 'charge.dispute.created':
-        await this.paymentService.handleDisputeOpened(actor, rental);
-        break;
-      case 'charge.dispute.closed':
-        await this.paymentService.handleDisputeResolved(actor, rental);
-        break;
-    }
+    // 8. Record event as processed (after successful save)
+    this.processedEvents.set(event.id, {
+      rentalId: rental.id,
+      eventType: event.type,
+      processedAt: new Date(),
+    });
+
+    // 9. Audit: webhook successfully processed
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: `webhook_processed:${event.type}`,
+      outcome: 'success',
+      beforeState: beforeStatus,
+      afterState: rental.escrowStatus,
+      externalRef: event.id,
+    });
+
+    res.status(200).json({ received: true, processed: true });
   }
 
   /**
-   * Detect whether an error represents a duplicate state transition.
-   * These are expected under webhook retry scenarios and should be
-   * acknowledged as success to prevent infinite retries.
+   * Dispatch a validated event to the appropriate MarketplacePaymentService handler.
+   *
+   * Uses the PaymentEventType enum — never raw strings. The switch is exhaustive
+   * for all supported event types with a default guard that throws for unknown types
+   * (which should be unreachable due to WebhookEventValidator.isSupportedEventType).
    */
-  private isDuplicateTransitionError(error: unknown): boolean {
-    if (
-      error !== null &&
-      error !== undefined &&
-      typeof error === 'object' &&
-      'code' in error
-    ) {
-      const code = (error as { code: string }).code;
-      return (
-        code === 'INVALID_ESCROW_TRANSITION' ||
-        code === 'INVALID_STATE_TRANSITION'
-      );
+  private async dispatchEvent(
+    actor: SystemActor,
+    eventType: PaymentEventType,
+    rental: Rental,
+  ): Promise<void> {
+    switch (eventType) {
+      case PaymentEventType.PAYMENT_AUTHORIZED:
+        await this.paymentService.handlePaymentAuthorized(actor, rental);
+        break;
+      case PaymentEventType.PAYMENT_CAPTURED:
+        await this.paymentService.handlePaymentCaptured(actor, rental);
+        break;
+      case PaymentEventType.CHARGE_REFUNDED:
+        await this.paymentService.handlePaymentRefunded(actor, rental);
+        break;
+      case PaymentEventType.DISPUTE_OPENED:
+        await this.paymentService.handleDisputeOpened(actor, rental);
+        break;
+      case PaymentEventType.DISPUTE_CLOSED:
+        await this.paymentService.handleDisputeResolved(actor, rental);
+        break;
+      default: {
+        // Exhaustive check — if this fires, a new PaymentEventType was
+        // added without updating this switch.
+        const _exhaustive: never = eventType;
+        throw new DomainError(
+          `Unhandled payment event type: ${_exhaustive}`,
+          'INVALID_PAYMENT_TRANSITION',
+        );
+      }
     }
-    return false;
   }
 }
