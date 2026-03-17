@@ -49,6 +49,7 @@ export class Rental {
   private _externalPaymentIntentId: string | null;
   private _returnConfirmed: boolean;
   private _disputeOpen: boolean;
+  private _externalTransferId: string | null;
   private _version: number;
 
   private constructor(params: {
@@ -58,6 +59,7 @@ export class Rental {
     rentalPrice: number;
     escrowStatus: EscrowStatus;
     externalPaymentIntentId: string | null;
+    externalTransferId: string | null;
     returnConfirmed: boolean;
     disputeOpen: boolean;
     createdAt: Date;
@@ -69,6 +71,7 @@ export class Rental {
     this.rentalPrice = params.rentalPrice;
     this._escrowStatus = params.escrowStatus;
     this._externalPaymentIntentId = params.externalPaymentIntentId;
+    this._externalTransferId = params.externalTransferId;
     this._returnConfirmed = params.returnConfirmed;
     this._disputeOpen = params.disputeOpen;
     this.createdAt = params.createdAt;
@@ -109,6 +112,7 @@ export class Rental {
       rentalPrice: params.rentalPrice,
       escrowStatus: EscrowStatus.NOT_STARTED,
       externalPaymentIntentId: null,
+      externalTransferId: null,
       returnConfirmed: false,
       disputeOpen: false,
       createdAt: params.createdAt,
@@ -129,6 +133,7 @@ export class Rental {
     rentalPrice: number;
     escrowStatus: string;
     externalPaymentIntentId: string | null;
+    externalTransferId?: string | null;
     returnConfirmed: boolean;
     disputeOpen: boolean;
     createdAt: Date;
@@ -215,6 +220,7 @@ export class Rental {
       rentalPrice: params.rentalPrice,
       escrowStatus,
       externalPaymentIntentId: params.externalPaymentIntentId,
+      externalTransferId: params.externalTransferId ?? null,
       returnConfirmed: params.returnConfirmed,
       disputeOpen: params.disputeOpen,
       createdAt: params.createdAt,
@@ -228,6 +234,10 @@ export class Rental {
 
   get externalPaymentIntentId(): string | null {
     return this._externalPaymentIntentId;
+  }
+
+  get externalTransferId(): string | null {
+    return this._externalTransferId;
   }
 
   get returnConfirmed(): boolean {
@@ -310,7 +320,7 @@ export class Rental {
     this.transitionTo(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
   }
 
-  releaseFunds(): void {
+  releaseFunds(externalTransferId?: string): void {
     if (!this._returnConfirmed) {
       throw new DomainError(
         'Cannot release funds without confirmed return',
@@ -324,6 +334,9 @@ export class Rental {
       );
     }
     this.transitionTo(EscrowStatus.FUNDS_RELEASED_TO_OWNER);
+    if (externalTransferId) {
+      this._externalTransferId = externalTransferId;
+    }
   }
 
   markDisputed(): void {

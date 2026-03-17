@@ -7,6 +7,7 @@ export interface InternalPaymentSnapshot {
   readonly rentalId: string;
   readonly escrowStatus: EscrowStatus;
   readonly externalPaymentIntentId: string | null;
+  readonly externalTransferId: string | null;
   readonly rentalPrice: number;
   readonly returnConfirmed: boolean;
   readonly disputeOpen: boolean;
@@ -23,6 +24,7 @@ export class InternalSnapshotBuilder {
     id: string;
     escrowStatus: EscrowStatus;
     externalPaymentIntentId: string | null;
+    externalTransferId: string | null;
     rentalPrice: number;
     returnConfirmed: boolean;
     disputeOpen: boolean;
@@ -34,6 +36,7 @@ export class InternalSnapshotBuilder {
       rentalId: rental.id,
       escrowStatus: rental.escrowStatus,
       externalPaymentIntentId: rental.externalPaymentIntentId,
+      externalTransferId: rental.externalTransferId,
       rentalPrice: rental.rentalPrice,
       returnConfirmed: rental.returnConfirmed,
       disputeOpen: rental.disputeOpen,

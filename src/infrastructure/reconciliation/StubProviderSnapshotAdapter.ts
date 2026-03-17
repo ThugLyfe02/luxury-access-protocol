@@ -2,6 +2,7 @@ import {
   ProviderSnapshotAdapter,
   ProviderPaymentSnapshot,
   ProviderConnectedAccountSnapshot,
+  ProviderTransferSnapshot,
 } from '../../domain/reconciliation/ProviderSnapshot';
 
 /**
@@ -15,6 +16,10 @@ export class StubProviderSnapshotAdapter implements ProviderSnapshotAdapter {
   }
 
   async fetchConnectedAccountSnapshot(_connectedAccountId: string): Promise<ProviderConnectedAccountSnapshot | null> {
+    return null;
+  }
+
+  async fetchTransferSnapshot(_transferId: string): Promise<ProviderTransferSnapshot | null> {
     return null;
   }
 }

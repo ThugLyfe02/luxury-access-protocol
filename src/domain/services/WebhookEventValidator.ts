@@ -12,6 +12,8 @@ export enum PaymentEventType {
   PAYMENT_AUTHORIZED = 'payment_authorized',
   /** Payment captured — funds secured */
   PAYMENT_CAPTURED = 'payment_captured',
+  /** Payment failed — provider rejected the payment attempt (non-terminal, renter may retry) */
+  PAYMENT_FAILED = 'payment_failed',
   /** Refund processed */
   CHARGE_REFUNDED = 'charge_refunded',
   /** Dispute opened — blocks release */
@@ -52,6 +54,13 @@ const VALID_PRECONDITIONS: ReadonlyMap<PaymentEventType, ReadonlySet<EscrowStatu
         EscrowStatus.AWAITING_EXTERNAL_PAYMENT,
         EscrowStatus.EXTERNAL_PAYMENT_AUTHORIZED,
         EscrowStatus.EXTERNAL_PAYMENT_CAPTURED,
+      ]),
+    ],
+    [
+      PaymentEventType.PAYMENT_FAILED,
+      new Set<EscrowStatus>([
+        EscrowStatus.AWAITING_EXTERNAL_PAYMENT,
+        EscrowStatus.EXTERNAL_PAYMENT_AUTHORIZED,
       ]),
     ],
     [

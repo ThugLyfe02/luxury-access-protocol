@@ -87,6 +87,33 @@ export class MarketplacePaymentService {
   }
 
   /**
+   * Handle external event: payment failed.
+   * Restricted to system actors (webhook callbacks).
+   *
+   * This is a PASSIVE acknowledgment — the failure was reported by the provider.
+   * No escrow state mutation occurs because:
+   * - The renter may retry the payment (Stripe allows retry on the same PI)
+   * - A later success webhook will advance the FSM normally
+   * - Terminally mutating on failure would block legitimate retry paths
+   *
+   * The event is recorded in the audit log for observability.
+   */
+  async handlePaymentFailed(actor: Actor, rental: Rental): Promise<void> {
+    AuthorizationGuard.requireSystem(actor);
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: 'payment_failed',
+      outcome: 'success',
+      beforeState: rental.escrowStatus,
+      afterState: rental.escrowStatus,
+      externalRef: rental.externalPaymentIntentId,
+    });
+  }
+
+  /**
    * Actively request payment capture from the external provider.
    *
    * Called by business logic after deterministic events (e.g., watch
@@ -612,7 +639,7 @@ export class MarketplacePaymentService {
     // Entity-level transition to terminal FUNDS_RELEASED_TO_OWNER state.
     // This also re-checks return + dispute gates at the entity level.
     const beforeState = params.rental.escrowStatus;
-    params.rental.releaseFunds();
+    params.rental.releaseFunds(transferId);
 
     this.auditLog.record({
       actor,

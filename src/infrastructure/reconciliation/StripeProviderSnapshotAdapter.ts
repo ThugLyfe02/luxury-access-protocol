@@ -4,6 +4,8 @@ import {
   ProviderPaymentSnapshot,
   ProviderPaymentStatus,
   ProviderConnectedAccountSnapshot,
+  ProviderTransferSnapshot,
+  ProviderTransferStatus,
 } from '../../domain/reconciliation/ProviderSnapshot';
 import { ProviderError } from '../../domain/errors/ProviderError';
 
@@ -52,6 +54,39 @@ export class StripeProviderSnapshotAdapter implements ProviderSnapshotAdapter {
         isStateChanging: false,
       });
     }
+  }
+
+  async fetchTransferSnapshot(transferId: string): Promise<ProviderTransferSnapshot | null> {
+    try {
+      const transfer = await this.stripe.transfers.retrieve(transferId);
+      return {
+        transferId: transfer.id,
+        status: this.mapTransferStatus(transfer),
+        amount: transfer.amount,
+        currency: transfer.currency,
+        destination: typeof transfer.destination === 'string'
+          ? transfer.destination
+          : transfer.destination?.id ?? '',
+        reversed: transfer.reversed,
+        metadata: (transfer.metadata ?? {}) as Readonly<Record<string, string>>,
+        fetchedAt: new Date(),
+      };
+    } catch (error) {
+      if (this.isNotFound(error)) return null;
+      throw new ProviderError({
+        message: `fetchTransferSnapshot: ${error instanceof Error ? error.message : 'unknown'}`,
+        code: 'PROVIDER_UNAVAILABLE',
+        isStateChanging: false,
+      });
+    }
+  }
+
+  private mapTransferStatus(transfer: Stripe.Transfer): ProviderTransferStatus {
+    if (transfer.reversed) return 'reversed';
+    // Stripe transfers don't have a dedicated status field like payment intents.
+    // A transfer that exists and is not reversed is considered 'paid'.
+    // If the object exists, the transfer was successful.
+    return 'paid';
   }
 
   private mapPaymentIntent(pi: Stripe.PaymentIntent): ProviderPaymentSnapshot {

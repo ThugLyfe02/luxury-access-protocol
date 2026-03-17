@@ -60,6 +60,13 @@ export class ReconciliationEngine {
 
       const drifts = DriftDetector.detectPaymentDrift(internal, provider);
 
+      // Transfer truth check: if funds released and transfer ID exists, verify transfer state
+      if (rental.externalTransferId) {
+        const transferSnapshot = await this.providerAdapter.fetchTransferSnapshot(rental.externalTransferId);
+        const transferDrifts = DriftDetector.detectTransferDrift(internal, transferSnapshot);
+        drifts.push(...transferDrifts);
+      }
+
       for (const drift of drifts) {
         // Dedup: skip if an open finding already exists for this drift
         const existing = await this.reconciliationRepo.findOpenByAggregateAndDrift(

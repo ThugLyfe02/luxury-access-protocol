@@ -131,6 +131,24 @@ const DRIFT_CLASSIFICATIONS: ReadonlyMap<DriftType, DriftClassification> = new M
     reviewRequired: true,
     description: 'Internal record has committed payment state with no provider match. Possible provider data loss.',
   }],
+
+  [DriftType.TRANSFER_REVERSED_BUT_INTERNAL_RELEASED, {
+    severity: ReconciliationSeverity.CRITICAL,
+    recommendedAction: 'FREEZE_ENTITY',
+    autoRepairAllowed: false,
+    freezeRequired: true,
+    reviewRequired: true,
+    description: 'Provider transfer reversed but internal state shows funds released. Money movement reversal requires manual investigation.',
+  }],
+
+  [DriftType.TRANSFER_NOT_FOUND_BUT_INTERNAL_RELEASED, {
+    severity: ReconciliationSeverity.CRITICAL,
+    recommendedAction: 'FREEZE_ENTITY',
+    autoRepairAllowed: false,
+    freezeRequired: true,
+    reviewRequired: true,
+    description: 'Internal shows funds released with transfer ID but provider has no record. Transfer may have failed silently.',
+  }],
 ]);
 
 export class DriftTaxonomy {

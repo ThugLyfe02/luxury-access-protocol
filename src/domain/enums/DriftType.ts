@@ -34,4 +34,10 @@ export enum DriftType {
 
   /** Internal has committed payment state with no provider match */
   ORPHAN_INTERNAL_RECORD = 'ORPHAN_INTERNAL_RECORD',
+
+  /** Internal shows funds released with a transfer ID but provider transfer reversed */
+  TRANSFER_REVERSED_BUT_INTERNAL_RELEASED = 'TRANSFER_REVERSED_BUT_INTERNAL_RELEASED',
+
+  /** Internal shows funds released with a transfer ID but provider has no record of it */
+  TRANSFER_NOT_FOUND_BUT_INTERNAL_RELEASED = 'TRANSFER_NOT_FOUND_BUT_INTERNAL_RELEASED',
 }

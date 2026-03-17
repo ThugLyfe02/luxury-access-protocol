@@ -57,6 +57,8 @@ function toPaymentEventType(type: NormalizedEventType): PaymentEventType | null 
       return PaymentEventType.PAYMENT_AUTHORIZED;
     case NormalizedEventType.PAYMENT_CAPTURED:
       return PaymentEventType.PAYMENT_CAPTURED;
+    case NormalizedEventType.PAYMENT_FAILED:
+      return PaymentEventType.PAYMENT_FAILED;
     case NormalizedEventType.PAYMENT_REFUNDED:
       return PaymentEventType.CHARGE_REFUNDED;
     case NormalizedEventType.DISPUTE_OPENED:
@@ -196,6 +198,7 @@ export class WebhookController {
     }
 
     const beforeStatus = rental.escrowStatus;
+    const beforeVersion = rental.version;
     const validation = WebhookEventValidator.validate(
       paymentEventType,
       rental.escrowStatus,
@@ -258,29 +261,32 @@ export class WebhookController {
       return;
     }
 
-    // 6. Persist updated rental state
-    try {
-      await this.rentalRepo.save(rental);
-    } catch (error) {
-      if (error instanceof DomainError && error.code === 'VERSION_CONFLICT') {
-        this.auditLog.record({
-          actor,
-          entityType: 'Rental',
-          entityId: rental.id,
-          action: 'webhook_save_version_conflict',
-          outcome: 'error',
-          beforeState: beforeStatus,
-          afterState: rental.escrowStatus,
-          errorCode: error.code,
-          errorMessage: error.message,
-          externalRef: stripeEventId,
-        });
-        res.status(409).json({
-          error: { code: 'VERSION_CONFLICT', message: 'Concurrent modification detected; retry the event' },
-        });
-        return;
+    // 6. Persist updated rental state (only if the handler mutated the entity)
+    const entityMutated = rental.version !== beforeVersion;
+    if (entityMutated) {
+      try {
+        await this.rentalRepo.save(rental);
+      } catch (error) {
+        if (error instanceof DomainError && error.code === 'VERSION_CONFLICT') {
+          this.auditLog.record({
+            actor,
+            entityType: 'Rental',
+            entityId: rental.id,
+            action: 'webhook_save_version_conflict',
+            outcome: 'error',
+            beforeState: beforeStatus,
+            afterState: rental.escrowStatus,
+            errorCode: error.code,
+            errorMessage: error.message,
+            externalRef: stripeEventId,
+          });
+          res.status(409).json({
+            error: { code: 'VERSION_CONFLICT', message: 'Concurrent modification detected; retry the event' },
+          });
+          return;
+        }
+        throw error;
       }
-      throw error;
     }
 
     // 7. Record event as processed (after successful save)
@@ -316,6 +322,9 @@ export class WebhookController {
         break;
       case PaymentEventType.PAYMENT_CAPTURED:
         await this.paymentService.handlePaymentCaptured(actor, rental);
+        break;
+      case PaymentEventType.PAYMENT_FAILED:
+        await this.paymentService.handlePaymentFailed(actor, rental);
         break;
       case PaymentEventType.CHARGE_REFUNDED:
         await this.paymentService.handlePaymentRefunded(actor, rental);

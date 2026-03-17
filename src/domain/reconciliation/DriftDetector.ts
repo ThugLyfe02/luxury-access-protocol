@@ -1,7 +1,7 @@
 import { DriftType } from '../enums/DriftType';
 import { EscrowStatus } from '../enums/EscrowStatus';
 import { InternalPaymentSnapshot } from './InternalSnapshot';
-import { ProviderPaymentSnapshot, ProviderPaymentStatus } from './ProviderSnapshot';
+import { ProviderPaymentSnapshot, ProviderPaymentStatus, ProviderTransferSnapshot } from './ProviderSnapshot';
 
 export interface DetectedDrift {
   readonly driftType: DriftType;
@@ -130,6 +130,54 @@ export class DriftDetector {
         internalSnapshot: internalSnap,
         providerSnapshot: providerSnap,
         providerObjectIds: [provider.paymentIntentId],
+      });
+    }
+
+    return drifts;
+  }
+
+  /**
+   * Compare internal transfer state against provider transfer truth.
+   * Only applicable when internal state is FUNDS_RELEASED_TO_OWNER and
+   * a transfer ID is recorded.
+   *
+   * Returns drifts for:
+   * - Transfer not found at provider (lost transfer)
+   * - Transfer reversed at provider (clawback)
+   */
+  static detectTransferDrift(
+    internal: InternalPaymentSnapshot,
+    transferSnapshot: ProviderTransferSnapshot | null,
+  ): DetectedDrift[] {
+    const drifts: DetectedDrift[] = [];
+
+    // Only check transfer truth when internal says funds were released with a transfer ID
+    if (internal.escrowStatus !== EscrowStatus.FUNDS_RELEASED_TO_OWNER || !internal.externalTransferId) {
+      return drifts;
+    }
+
+    const internalSnap = { ...internal } as Record<string, unknown>;
+
+    // Transfer not found at provider
+    if (!transferSnapshot) {
+      drifts.push({
+        driftType: DriftType.TRANSFER_NOT_FOUND_BUT_INTERNAL_RELEASED,
+        internalSnapshot: internalSnap,
+        providerSnapshot: { transferId: internal.externalTransferId, status: 'not_found' },
+        providerObjectIds: [internal.externalTransferId],
+      });
+      return drifts;
+    }
+
+    const providerSnap = { ...transferSnapshot } as unknown as Record<string, unknown>;
+
+    // Transfer reversed at provider
+    if (transferSnapshot.reversed) {
+      drifts.push({
+        driftType: DriftType.TRANSFER_REVERSED_BUT_INTERNAL_RELEASED,
+        internalSnapshot: internalSnap,
+        providerSnapshot: providerSnap,
+        providerObjectIds: [transferSnapshot.transferId],
       });
     }
 
