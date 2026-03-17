@@ -76,6 +76,13 @@ import { CircuitBreaker } from './infrastructure/resilience/CircuitBreaker';
 import { HealthMonitor } from './infrastructure/resilience/HealthMonitor';
 import { RateLimiter, InMemoryRateLimiterAdapter } from './infrastructure/resilience/RateLimiter';
 import { StructuredLogger, ConsoleLogSink } from './infrastructure/resilience/StructuredLogger';
+import { MetricsRegistry } from './observability/metrics/MetricsRegistry';
+import { SystemMetricsCollector } from './observability/collectors/SystemMetricsCollector';
+import { WorkerMetricsCollector } from './observability/collectors/WorkerMetricsCollector';
+import { ReconciliationMetricsCollector } from './observability/collectors/ReconciliationMetricsCollector';
+import { SystemDiagnosticsService } from './observability/diagnostics/SystemDiagnosticsService';
+import { IncidentSnapshotBuilder } from './observability/diagnostics/IncidentSnapshotBuilder';
+import { SLOEvaluator } from './observability/slos/SLOEvaluator';
 
 /**
  * Composition root.
@@ -263,10 +270,35 @@ const adminRepairRateLimiter = new RateLimiter(
   resilienceConfig.rateLimitAdminRepair,
 );
 
+// --- Observability ---
+const metricsRegistry = MetricsRegistry.getInstance();
+const systemMetricsCollector = new SystemMetricsCollector(metricsRegistry, allBreakers);
+const workerMetricsCollector = new WorkerMetricsCollector(metricsRegistry);
+const reconciliationMetricsCollector = new ReconciliationMetricsCollector(metricsRegistry);
+
+const diagnosticsDataSources = {
+  getOutboxDiagnostics: () => outboxRepo.diagnostics(),
+  getReconciliationDiagnostics: () => reconciliationRepo.diagnostics(),
+};
+
+const diagnosticsService = new SystemDiagnosticsService(
+  allBreakers, healthMonitor, diagnosticsDataSources, metricsRegistry,
+);
+
+const sloEvaluator = new SLOEvaluator(metricsRegistry, diagnosticsDataSources);
+
+// Expose collectors for future instrumentation hooks
+void systemMetricsCollector;
+void workerMetricsCollector;
+void reconciliationMetricsCollector;
+
 // --- Application Services ---
 const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog, outboxRepo);
 const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog, outboxRepo);
 const adminControlService = new AdminControlService(freezeRepo, auditLogRepo, manualReviewRepo);
+
+// --- Incident Snapshot ---
+const incidentSnapshotBuilder = new IncidentSnapshotBuilder(outboxRepo, reconciliationRepo, auditLog);
 
 // --- HTTP Controllers ---
 const webhookController = new WebhookController({
@@ -317,6 +349,12 @@ const app = createApp({
     healthMonitor,
     breakers: allBreakers,
     resilienceConfig,
+  },
+  observability: {
+    registry: metricsRegistry,
+    diagnosticsService,
+    incidentSnapshotBuilder,
+    sloEvaluator,
   },
   webhookController,
   tokenService,
