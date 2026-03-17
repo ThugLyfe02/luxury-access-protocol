@@ -60,6 +60,7 @@ export class ManualReviewCase {
   private _version: number;
   private readonly _freezeTargets: FreezeTarget[];
   private readonly _slaDeadline: Date;
+  private readonly _notes: string[];
 
   private constructor(params: {
     id: string;
@@ -75,6 +76,7 @@ export class ManualReviewCase {
     version: number;
     freezeTargets: FreezeTarget[];
     slaDeadline: Date;
+    notes?: readonly string[];
   }) {
     this.id = params.id;
     this.rentalId = params.rentalId;
@@ -89,6 +91,7 @@ export class ManualReviewCase {
     this._version = params.version;
     this._freezeTargets = [...params.freezeTargets];
     this._slaDeadline = params.slaDeadline;
+    this._notes = [...(params.notes ?? [])];
   }
 
   private static validate(params: {
@@ -270,6 +273,10 @@ export class ManualReviewCase {
     return this._slaDeadline;
   }
 
+  get notes(): ReadonlyArray<string> {
+    return this._notes;
+  }
+
   // --- Query Methods ---
 
   /**
@@ -373,6 +380,27 @@ export class ManualReviewCase {
     this._resolvedBy = null;
     this._resolvedAt = null;
     this._resolution = null;
+  }
+
+  /**
+   * Add a note to the review case. Notes are append-only.
+   */
+  addNote(note: string): void {
+    if (!note || note.trim().length === 0) {
+      throw new DomainError(
+        'Note content is required',
+        'REVIEW_REQUIRED',
+      );
+    }
+    this._notes.push(note.trim());
+    this._version += 1;
+  }
+
+  /**
+   * Mark the case as in review without assigning. Transitions from OPEN to IN_REVIEW.
+   */
+  markInReview(): void {
+    this.transitionTo(ReviewStatus.IN_REVIEW);
   }
 
   /**

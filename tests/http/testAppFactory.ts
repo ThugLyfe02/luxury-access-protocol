@@ -16,6 +16,10 @@ import { InMemoryConnectedAccountStore } from '../../src/http/routes/ownerRoutes
 import { AuditLog } from '../../src/application/audit/AuditLog';
 import { InMemoryAuditSink } from '../../src/infrastructure/audit/InMemoryAuditSink';
 import { PaymentProvider } from '../../src/domain/interfaces/PaymentProvider';
+import { AdminControlService } from '../../src/application/services/AdminControlService';
+import { InMemoryFreezeRepository } from '../../src/infrastructure/repositories/InMemoryFreezeRepository';
+import { InMemoryAuditLogRepository } from '../../src/infrastructure/repositories/InMemoryAuditLogRepository';
+import { InMemoryManualReviewRepository } from '../../src/infrastructure/repositories/InMemoryManualReviewRepository';
 import { testTokenService } from './testAuthHelper';
 import { Express } from 'express';
 
@@ -55,6 +59,11 @@ export function makeTestApp(overrides?: {
   const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog);
   const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog);
 
+  const freezeRepo = new InMemoryFreezeRepository();
+  const auditLogRepo = new InMemoryAuditLogRepository();
+  const manualReviewRepo = new InMemoryManualReviewRepository();
+  const adminControlService = new AdminControlService(freezeRepo, auditLogRepo, manualReviewRepo);
+
   const defaultVerifier: WebhookVerifier = () => { throw new Error('Stripe not configured'); };
 
   const webhookController = new WebhookController({
@@ -89,6 +98,9 @@ export function makeTestApp(overrides?: {
       paymentProvider,
       userRepo,
       connectedAccountStore,
+    },
+    admin: {
+      adminControlService,
     },
     webhookController,
     tokenService: testTokenService,

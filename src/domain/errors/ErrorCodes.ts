@@ -47,7 +47,12 @@ export type DomainErrorCode =
   | 'DUPLICATE_PAYMENT_EVENT'
   | 'RELEASE_NOT_ALLOWED'
   | 'REFUND_NOT_ALLOWED'
-  | 'FORBIDDEN';
+  | 'FORBIDDEN'
+  | 'MANUAL_REVIEW_REQUIRED'
+  | 'FROZEN_ENTITY'
+  | 'UNAUTHORIZED_ADMIN_ACTION'
+  | 'INVALID_REVIEW_STATE'
+  | 'INCIDENT_LOG_FAILURE';
 
 const DOMAIN_ERROR_CODES: ReadonlySet<string> = new Set([
   'INVALID_OWNER',
@@ -99,6 +104,11 @@ const DOMAIN_ERROR_CODES: ReadonlySet<string> = new Set([
   'RELEASE_NOT_ALLOWED',
   'REFUND_NOT_ALLOWED',
   'FORBIDDEN',
+  'MANUAL_REVIEW_REQUIRED',
+  'FROZEN_ENTITY',
+  'UNAUTHORIZED_ADMIN_ACTION',
+  'INVALID_REVIEW_STATE',
+  'INCIDENT_LOG_FAILURE',
 ]);
 
 export function isDomainErrorCode(value: string): value is DomainErrorCode {

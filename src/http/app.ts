@@ -5,15 +5,18 @@ import { centralErrorHandler } from './middleware/errorHandler';
 import { createHealthRoutes, HealthDeps } from './routes/healthRoutes';
 import { createRentalRoutes, RentalRouteDeps } from './routes/rentalRoutes';
 import { createOwnerRoutes, OwnerRouteDeps } from './routes/ownerRoutes';
+import { createAdminRoutes, AdminRouteDeps } from './routes/adminRoutes';
 import { createWebhookRoutes } from './routes/webhookRoutes';
 import { WebhookController } from './webhookController';
 import { JwtTokenService } from '../auth/JwtTokenService';
 import { requireAuth } from '../auth/middleware/requireAuth';
+import { requireAdmin as requireAdminMiddleware } from './middleware/requireAdmin';
 
 export interface AppDeps {
   health: HealthDeps;
   rental: RentalRouteDeps;
   owner: OwnerRouteDeps;
+  admin?: AdminRouteDeps;
   webhookController: WebhookController;
   tokenService: JwtTokenService;
 }
@@ -61,10 +64,16 @@ export function createApp(deps: AppDeps): Express {
   const authMiddleware = requireAuth(deps.tokenService);
   app.use('/rentals', authMiddleware);
   app.use('/owners', authMiddleware);
+  app.use('/admin', authMiddleware, requireAdminMiddleware);
   app.use(createRentalRoutes(deps.rental));
   app.use(createOwnerRoutes(deps.owner));
 
-  // 8. Central error handler — must be registered last
+  // 8. ADMIN routes — requires ADMIN role
+  if (deps.admin) {
+    app.use(createAdminRoutes(deps.admin));
+  }
+
+  // 9. Central error handler — must be registered last
   app.use(centralErrorHandler);
 
   return app;
