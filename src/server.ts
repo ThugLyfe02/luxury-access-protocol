@@ -50,6 +50,21 @@ import { runMigration } from './infrastructure/db/migrate';
 import { closePool } from './infrastructure/db/connection';
 import { JwtTokenService } from './auth/JwtTokenService';
 import { loadAuthConfig } from './auth/AuthConfig';
+import { OutboxRepository } from './domain/interfaces/OutboxRepository';
+import { InMemoryOutboxRepository } from './infrastructure/repositories/InMemoryOutboxRepository';
+import { PostgresOutboxRepository } from './infrastructure/repositories/PostgresOutboxRepository';
+import { OutboxDiagnosticsService } from './application/services/OutboxDiagnosticsService';
+import { OutboxWorker } from './infrastructure/outbox/OutboxWorker';
+import { OutboxDispatcher } from './infrastructure/outbox/OutboxDispatcher';
+import {
+  CreateCheckoutSessionHandler,
+  CapturePaymentHandler,
+  RefundPaymentHandler,
+  TransferToOwnerHandler,
+  CreateConnectedAccountHandler,
+  CreateOnboardingLinkHandler,
+} from './infrastructure/outbox/ProviderCommandHandlers';
+import { createOutboxAdminRoutes } from './http/routes/outboxAdminRoutes';
 
 /**
  * Composition root.
@@ -85,6 +100,8 @@ let manualReviewRepo: ManualReviewRepository;
 let idempotencyStore: IdempotencyStore;
 let processedEvents: ProcessedWebhookEventStore;
 
+let outboxRepo: OutboxRepository;
+
 if (usePostgres) {
   userRepo = new PostgresUserRepository();
   watchRepo = new PostgresWatchRepository();
@@ -97,6 +114,7 @@ if (usePostgres) {
   auditLogRepo = new PostgresAuditLogRepository();
   idempotencyStore = new PostgresIdempotencyStore();
   processedEvents = new PostgresWebhookEventStore();
+  outboxRepo = new PostgresOutboxRepository();
 } else {
   userRepo = new InMemoryUserRepository();
   watchRepo = new InMemoryWatchRepository();
@@ -108,6 +126,7 @@ if (usePostgres) {
   auditLogRepo = new InMemoryAuditLogRepository();
   idempotencyStore = new InMemoryIdempotencyStore();
   processedEvents = new InMemoryProcessedWebhookEventStore();
+  outboxRepo = new InMemoryOutboxRepository();
 }
 
 const kycRepo = new InMemoryKycRepository();
@@ -154,9 +173,34 @@ const auditLog = new AuditLog(auditSink);
 // --- Stores ---
 const connectedAccountStore = new InMemoryConnectedAccountStore();
 
+// --- Outbox Infrastructure ---
+const outboxDiagnosticsService = new OutboxDiagnosticsService(outboxRepo);
+
+const outboxDispatcher = new OutboxDispatcher();
+outboxDispatcher.register('payment.checkout_session.create', new CreateCheckoutSessionHandler(paymentProvider));
+outboxDispatcher.register('payment.capture', new CapturePaymentHandler(paymentProvider));
+outboxDispatcher.register('payment.refund', new RefundPaymentHandler(paymentProvider));
+outboxDispatcher.register('payment.transfer_to_owner', new TransferToOwnerHandler(paymentProvider));
+outboxDispatcher.register('payment.connected_account.create', new CreateConnectedAccountHandler(paymentProvider));
+outboxDispatcher.register('payment.onboarding_link.create', new CreateOnboardingLinkHandler(paymentProvider));
+
+const outboxWorker = new OutboxWorker(outboxRepo, outboxDispatcher, {
+  workerId: `worker-${process.pid}`,
+  batchSize: 10,
+  pollIntervalMs: 1000,
+  staleLeaseThresholdMs: 60_000,
+}, {
+  // eslint-disable-next-line no-console
+  info: (msg, meta) => console.log(`[outbox] ${msg}`, meta ?? ''),
+  // eslint-disable-next-line no-console
+  warn: (msg, meta) => console.warn(`[outbox] ${msg}`, meta ?? ''),
+  // eslint-disable-next-line no-console
+  error: (msg, meta) => console.error(`[outbox] ${msg}`, meta ?? ''),
+});
+
 // --- Application Services ---
-const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog);
-const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog);
+const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog, outboxRepo);
+const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog, outboxRepo);
 const adminControlService = new AdminControlService(freezeRepo, auditLogRepo, manualReviewRepo);
 
 // --- HTTP Controllers ---
@@ -195,6 +239,9 @@ const app = createApp({
   admin: {
     adminControlService,
   },
+  outboxAdmin: {
+    outboxDiagnosticsService,
+  },
   webhookController,
   tokenService,
 });
@@ -211,6 +258,9 @@ async function start(): Promise<void> {
     console.log('Schema migration complete.');
   }
 
+  // Start the outbox worker for async side-effect processing
+  outboxWorker.start();
+
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
@@ -222,11 +272,13 @@ async function start(): Promise<void> {
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
+  outboxWorker.stop();
   if (usePostgres) await closePool();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
+  outboxWorker.stop();
   if (usePostgres) await closePool();
   process.exit(0);
 });

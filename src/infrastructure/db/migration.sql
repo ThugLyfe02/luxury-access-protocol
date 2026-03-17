@@ -282,3 +282,82 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 );
 
 -- Unique key is the PK itself — prevents duplicate inserts
+
+-- ============================================================
+-- ENUM: outbox_event_status
+-- ============================================================
+
+DO $$ BEGIN
+  CREATE TYPE outbox_event_status AS ENUM (
+    'PENDING', 'PROCESSING', 'SUCCEEDED', 'FAILED', 'DEAD_LETTER'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================
+-- ENUM: outbox_event_topic
+-- ============================================================
+
+DO $$ BEGIN
+  CREATE TYPE outbox_event_topic AS ENUM (
+    'payment.checkout_session.create',
+    'payment.capture',
+    'payment.refund',
+    'payment.transfer_to_owner',
+    'payment.connected_account.create',
+    'payment.onboarding_link.create'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================
+-- OUTBOX EVENTS (Transactional Outbox Pattern)
+-- ============================================================
+-- Durable side-effect queue. Events are written atomically
+-- alongside domain state changes. The outbox worker polls
+-- for PENDING events and processes them asynchronously.
+--
+-- Key guarantees:
+-- - dedup_key UNIQUE prevents duplicate side effects
+-- - status + available_at index enables efficient polling
+-- - locked_by/locked_at support worker lease acquisition
+-- - attempt_count + max_attempts enforce retry limits
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS outbox_events (
+  id              UUID PRIMARY KEY,
+  topic           outbox_event_topic   NOT NULL,
+  aggregate_type  TEXT                 NOT NULL,
+  aggregate_id    TEXT                 NOT NULL,
+  payload         JSONB                NOT NULL DEFAULT '{}'::jsonb,
+  dedup_key       TEXT                 NOT NULL UNIQUE,
+  status          outbox_event_status  NOT NULL DEFAULT 'PENDING',
+  attempt_count   INTEGER              NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  max_attempts    INTEGER              NOT NULL DEFAULT 5 CHECK (max_attempts > 0),
+  available_at    TIMESTAMPTZ          NOT NULL DEFAULT now(),
+  locked_at       TIMESTAMPTZ,
+  locked_by       TEXT,
+  last_error      TEXT,
+  result          JSONB,
+  created_at      TIMESTAMPTZ          NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ          NOT NULL DEFAULT now()
+);
+
+-- Primary polling index: find PENDING events that are ready
+CREATE INDEX IF NOT EXISTS idx_outbox_events_poll
+  ON outbox_events(status, available_at)
+  WHERE status = 'PENDING';
+
+-- Dead letter inspection
+CREATE INDEX IF NOT EXISTS idx_outbox_events_dead_letter
+  ON outbox_events(status, created_at)
+  WHERE status = 'DEAD_LETTER';
+
+-- Stale lease detection: find PROCESSING events with old locks
+CREATE INDEX IF NOT EXISTS idx_outbox_events_stale_leases
+  ON outbox_events(status, locked_at)
+  WHERE status = 'PROCESSING';
+
+-- Aggregate lookup: find all outbox events for a given aggregate
+CREATE INDEX IF NOT EXISTS idx_outbox_events_aggregate
+  ON outbox_events(aggregate_type, aggregate_id);

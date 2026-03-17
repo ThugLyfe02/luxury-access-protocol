@@ -10,6 +10,9 @@ import { ReviewFreezePolicy } from '../../domain/services/ReviewFreezePolicy';
 import { Actor } from '../auth/Actor';
 import { AuthorizationGuard } from '../auth/AuthorizationGuard';
 import { AuditLog } from '../audit/AuditLog';
+import { OutboxRepository } from '../../domain/interfaces/OutboxRepository';
+import { OutboxEventFactory } from '../../domain/services/OutboxEventFactory';
+import { OutboxEvent } from '../../domain/entities/OutboxEvent';
 
 /**
  * Orchestrates interaction between the platform and the external payment
@@ -20,14 +23,16 @@ import { AuditLog } from '../audit/AuditLog';
  *
  * Method naming convention:
  * - handle*  = passive acknowledgment of an external event (webhook-driven)
- * - request* = active operation that calls the payment provider
+ * - request* = active operation that calls the payment provider (or writes outbox event)
  *
- * This distinction prevents the webhook handler from re-calling the
- * provider for operations that have already happened externally.
+ * When an OutboxRepository is provided, active operations write durable
+ * outbox events instead of calling the provider directly. The outbox worker
+ * processes these events asynchronously with retry and dead-letter support.
  */
 export class MarketplacePaymentService {
   private readonly paymentProvider: PaymentProvider;
   private readonly auditLog: AuditLog;
+  private readonly outboxRepo: OutboxRepository | null;
 
   /**
    * Tracks rental IDs for which a release has been initiated.
@@ -36,9 +41,10 @@ export class MarketplacePaymentService {
    */
   private readonly releasedRentalIds = new Set<string>();
 
-  constructor(paymentProvider: PaymentProvider, auditLog: AuditLog) {
+  constructor(paymentProvider: PaymentProvider, auditLog: AuditLog, outboxRepo?: OutboxRepository) {
     this.paymentProvider = paymentProvider;
     this.auditLog = auditLog;
+    this.outboxRepo = outboxRepo ?? null;
   }
 
   /**
@@ -89,7 +95,7 @@ export class MarketplacePaymentService {
    * The provider captures the previously authorized hold. After this
    * succeeds, the rental transitions to CAPTURED.
    */
-  async requestCapture(actor: Actor, rental: Rental): Promise<void> {
+  async requestCapture(actor: Actor, rental: Rental): Promise<OutboxEvent | null> {
     AuthorizationGuard.requireSystemOrAdmin(actor);
 
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
@@ -106,6 +112,28 @@ export class MarketplacePaymentService {
       );
     }
 
+    if (this.outboxRepo) {
+      // Outbox mode: write durable event, worker executes capture
+      const outboxEvent = OutboxEventFactory.capturePayment({
+        rentalId: rental.id,
+        paymentIntentId: rental.externalPaymentIntentId,
+      });
+      await this.outboxRepo.create(outboxEvent);
+
+      this.auditLog.record({
+        actor,
+        entityType: 'Rental',
+        entityId: rental.id,
+        action: 'payment_capture_queued',
+        outcome: 'success',
+        afterState: rental.escrowStatus,
+        externalRef: outboxEvent.id,
+      });
+
+      return outboxEvent;
+    }
+
+    // Direct mode: call provider synchronously
     const { captured } = await this.paymentProvider.capturePayment(
       rental.externalPaymentIntentId,
     );
@@ -130,6 +158,8 @@ export class MarketplacePaymentService {
       afterState: rental.escrowStatus,
       externalRef: rental.externalPaymentIntentId,
     });
+
+    return null;
   }
 
   /**
@@ -178,7 +208,7 @@ export class MarketplacePaymentService {
    * Called by business logic or admin action. The provider returns
    * funds to the renter — the platform does not handle principal.
    */
-  async requestRefund(actor: Actor, rental: Rental): Promise<void> {
+  async requestRefund(actor: Actor, rental: Rental): Promise<OutboxEvent | null> {
     AuthorizationGuard.requireSystemOrAdmin(actor);
 
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
@@ -195,6 +225,28 @@ export class MarketplacePaymentService {
       );
     }
 
+    if (this.outboxRepo) {
+      // Outbox mode: write durable event, worker executes refund
+      const outboxEvent = OutboxEventFactory.refundPayment({
+        rentalId: rental.id,
+        paymentIntentId: rental.externalPaymentIntentId,
+      });
+      await this.outboxRepo.create(outboxEvent);
+
+      this.auditLog.record({
+        actor,
+        entityType: 'Rental',
+        entityId: rental.id,
+        action: 'payment_refund_queued',
+        outcome: 'success',
+        afterState: rental.escrowStatus,
+        externalRef: outboxEvent.id,
+      });
+
+      return outboxEvent;
+    }
+
+    // Direct mode: call provider synchronously
     const { refunded } = await this.paymentProvider.refundPayment(
       rental.externalPaymentIntentId,
     );
@@ -219,6 +271,8 @@ export class MarketplacePaymentService {
       afterState: rental.escrowStatus,
       externalRef: rental.externalPaymentIntentId,
     });
+
+    return null;
   }
 
   /**
@@ -516,7 +570,32 @@ export class MarketplacePaymentService {
       );
     }
 
-    // Instruct external provider to transfer to owner's connected account.
+    if (this.outboxRepo) {
+      // Outbox mode: write durable transfer event, worker executes
+      const outboxEvent = OutboxEventFactory.transferToOwner({
+        rentalId: params.rental.id,
+        amount: params.ownerShareAmount,
+        connectedAccountId: params.ownerConnectedAccountId,
+      });
+      await this.outboxRepo.create(outboxEvent);
+
+      // Mark as released to prevent duplicate transfers
+      this.releasedRentalIds.add(params.rental.id);
+
+      this.auditLog.record({
+        actor,
+        entityType: 'Rental',
+        entityId: params.rental.id,
+        action: 'release_to_owner_queued',
+        outcome: 'success',
+        afterState: params.rental.escrowStatus,
+        externalRef: outboxEvent.id,
+      });
+
+      return { transferId: `outbox:${outboxEvent.id}` };
+    }
+
+    // Direct mode: instruct external provider to transfer to owner's connected account.
     // This is executed BEFORE the entity transition so that if the external
     // provider fails, the rental remains in CAPTURED state and can be retried.
     const { transferId } = await this.paymentProvider.transferToConnectedAccount({

@@ -6,6 +6,7 @@ import { createHealthRoutes, HealthDeps } from './routes/healthRoutes';
 import { createRentalRoutes, RentalRouteDeps } from './routes/rentalRoutes';
 import { createOwnerRoutes, OwnerRouteDeps } from './routes/ownerRoutes';
 import { createAdminRoutes, AdminRouteDeps } from './routes/adminRoutes';
+import { createOutboxAdminRoutes, OutboxAdminRouteDeps } from './routes/outboxAdminRoutes';
 import { createWebhookRoutes } from './routes/webhookRoutes';
 import { WebhookController } from './webhookController';
 import { JwtTokenService } from '../auth/JwtTokenService';
@@ -17,6 +18,7 @@ export interface AppDeps {
   rental: RentalRouteDeps;
   owner: OwnerRouteDeps;
   admin?: AdminRouteDeps;
+  outboxAdmin?: OutboxAdminRouteDeps;
   webhookController: WebhookController;
   tokenService: JwtTokenService;
 }
@@ -71,6 +73,9 @@ export function createApp(deps: AppDeps): Express {
   // 8. ADMIN routes — requires ADMIN role
   if (deps.admin) {
     app.use(createAdminRoutes(deps.admin));
+  }
+  if (deps.outboxAdmin) {
+    app.use(createOutboxAdminRoutes(deps.outboxAdmin));
   }
 
   // 9. Central error handler — must be registered last

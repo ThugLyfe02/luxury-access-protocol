@@ -25,22 +25,29 @@ import { ReviewFreezePolicy } from '../../domain/services/ReviewFreezePolicy';
 import { Actor } from '../auth/Actor';
 import { AuthorizationGuard } from '../auth/AuthorizationGuard';
 import { AuditLog } from '../audit/AuditLog';
+import { OutboxRepository } from '../../domain/interfaces/OutboxRepository';
+import { OutboxEventFactory } from '../../domain/services/OutboxEventFactory';
+import { OutboxEvent } from '../../domain/entities/OutboxEvent';
 
 export interface InitiateRentalResult {
   rental: Rental;
   riskSignals: RiskSignal[];
   reviewCase: ManualReviewCase | null;
   blocked: boolean;
+  /** Outbox event for checkout session creation (when outbox is enabled) */
+  outboxEvent: OutboxEvent | null;
 }
 
 export class InitiateRentalService {
   private readonly paymentProvider: PaymentProvider;
   private readonly auditLog: AuditLog;
+  private readonly outboxRepo: OutboxRepository | null;
   private readonly processedIdempotencyKeys = new Set<string>();
 
-  constructor(paymentProvider: PaymentProvider, auditLog: AuditLog) {
+  constructor(paymentProvider: PaymentProvider, auditLog: AuditLog, outboxRepo?: OutboxRepository) {
     this.paymentProvider = paymentProvider;
     this.auditLog = auditLog;
+    this.outboxRepo = outboxRepo ?? null;
   }
 
   async execute(
@@ -203,21 +210,39 @@ export class InitiateRentalService {
           ])
         : null;
 
-      // 13. External checkout session via payment provider
-      const { paymentIntentId, sessionId } = await this.paymentProvider.createCheckoutSession({
-        rentalId: rental.id,
-        renterId: renter.id,
-        watchId: watch.id,
-        ownerId: watch.ownerId,
-        amount: rentalPrice,
-        currency: 'usd',
-      });
+      // 13. External checkout session via payment provider or outbox
+      let outboxEvent: OutboxEvent | null = null;
 
-      // 14. Transition to awaiting external payment
-      // The payment intent ID is the primary external reference used for
-      // captures, refunds, and webhook correlation. The session ID is
-      // the customer-facing checkout redirect target.
-      rental.startExternalPayment(paymentIntentId);
+      if (this.outboxRepo) {
+        // Outbox mode: write a durable event instead of calling the provider directly.
+        // The outbox worker will execute the checkout session creation asynchronously.
+        // The rental remains in NOT_STARTED until the worker processes the event.
+        outboxEvent = OutboxEventFactory.checkoutSession({
+          rentalId: rental.id,
+          renterId: renter.id,
+          watchId: watch.id,
+          ownerId: watch.ownerId,
+          amount: rentalPrice,
+          currency: 'usd',
+        });
+        await this.outboxRepo.create(outboxEvent);
+      } else {
+        // Direct mode: call the payment provider synchronously.
+        const { paymentIntentId, sessionId } = await this.paymentProvider.createCheckoutSession({
+          rentalId: rental.id,
+          renterId: renter.id,
+          watchId: watch.id,
+          ownerId: watch.ownerId,
+          amount: rentalPrice,
+          currency: 'usd',
+        });
+
+        // 14. Transition to awaiting external payment
+        // The payment intent ID is the primary external reference used for
+        // captures, refunds, and webhook correlation. The session ID is
+        // the customer-facing checkout redirect target.
+        rental.startExternalPayment(paymentIntentId);
+      }
 
       // 15. Record idempotency key after successful creation
       if (input.idempotencyKey) {
@@ -233,7 +258,7 @@ export class InitiateRentalService {
         outcome: 'success',
         afterState: rental.escrowStatus,
         correlationId,
-        externalRef: sessionId,
+        externalRef: outboxEvent ? outboxEvent.id : undefined,
       });
 
       if (reviewCase) {
@@ -253,6 +278,7 @@ export class InitiateRentalService {
         riskSignals,
         reviewCase,
         blocked: false,
+        outboxEvent,
       };
     } catch (error) {
       if (error instanceof DomainError) {
