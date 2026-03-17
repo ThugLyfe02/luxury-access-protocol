@@ -242,6 +242,20 @@ export class ReconciliationEngine {
    * This method finds the SUCCEEDED transfer outbox event for a rental and
    * extracts the transferId, enabling reconciliation to verify transfer truth
    * even when Rental.externalTransferId is missing.
+   *
+   * Selection policy:
+   * - Only SUCCEEDED events with topic payment.transfer_to_owner are considered.
+   * - The result.transferId must be a non-empty string to be accepted.
+   * - Events are returned by findByAggregate in created_at ASC order; the first
+   *   matching event is used. Under normal operation the dedup key
+   *   (transfer:{rentalId}) prevents duplicates, so at most one match exists.
+   *
+   * Retention assumption:
+   * This fallback depends on SUCCEEDED outbox events remaining queryable.
+   * If outbox events are purged or archived, recovery silently returns null
+   * (fail-safe: no false findings, but transfer verification is skipped).
+   * Outbox retention must span at least the reconciliation sweep interval
+   * plus any reasonable crash-recovery window.
    */
   private async recoverTransferIdFromOutbox(rentalId: string): Promise<string | null> {
     const events = await this.outboxRepo!.findByAggregate('Rental', rentalId);
@@ -251,7 +265,8 @@ export class ReconciliationEngine {
         event.topic === 'payment.transfer_to_owner' &&
         event.status === 'SUCCEEDED' &&
         event.result &&
-        typeof event.result.transferId === 'string'
+        typeof event.result.transferId === 'string' &&
+        event.result.transferId.length > 0
       ) {
         return event.result.transferId;
       }
