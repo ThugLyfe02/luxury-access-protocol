@@ -93,6 +93,29 @@ export class OutboxWorker {
   }
 
   /**
+   * Release all outbox event leases held by this worker.
+   * Called during graceful shutdown to return PROCESSING events
+   * to PENDING immediately, rather than waiting for stale lease recovery.
+   */
+  async releaseAllLeases(): Promise<number> {
+    const processing = await this.repo.findByStatus('PROCESSING', 1000);
+    const mine = processing.filter(e => e.lockedBy === this.config.workerId);
+    const now = new Date();
+
+    for (const event of mine) {
+      event.releaseStaleLease(now);
+      await this.repo.save(event);
+      this.logger.info('Released outbox lease on shutdown', {
+        eventId: event.id,
+        topic: event.topic,
+        workerId: this.config.workerId,
+      });
+    }
+
+    return mine.length;
+  }
+
+  /**
    * Execute a single poll cycle.
    * Exposed publicly for testing — production uses start/stop.
    */

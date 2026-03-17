@@ -3,11 +3,15 @@ import { successResponse } from '../dto/response';
 import { HealthMonitor } from '../../infrastructure/resilience/HealthMonitor';
 import { CircuitBreaker } from '../../infrastructure/resilience/CircuitBreaker';
 import { ResilienceConfig } from '../../infrastructure/resilience/ResilienceConfig';
+import { WorkerRegistry } from '../../infrastructure/coordination/WorkerRegistry';
+import { DistributedLeaseManager } from '../../infrastructure/coordination/DistributedLeaseManager';
 
 export interface ResilienceAdminRouteDeps {
   healthMonitor: HealthMonitor;
   breakers: CircuitBreaker[];
   resilienceConfig: ResilienceConfig;
+  workerRegistry?: WorkerRegistry;
+  leaseManager?: DistributedLeaseManager;
 }
 
 export function createResilienceAdminRoutes(deps: ResilienceAdminRouteDeps): Router {
@@ -67,6 +71,30 @@ export function createResilienceAdminRoutes(deps: ResilienceAdminRouteDeps): Rou
         workerHeartbeatStaleMs: c.workerHeartbeatStaleMs,
       },
     }, req.requestId));
+  });
+
+  /** GET /admin/resilience/workers — cluster worker registry */
+  router.get('/admin/resilience/workers', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!deps.workerRegistry) {
+        res.status(200).json(successResponse({ workers: [], message: 'Worker registry not configured' }, req.requestId));
+        return;
+      }
+      const workers = await deps.workerRegistry.getAll();
+      res.status(200).json(successResponse({ workers }, req.requestId));
+    } catch (error) { next(error); }
+  });
+
+  /** GET /admin/resilience/leases — active distributed leases */
+  router.get('/admin/resilience/leases', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!deps.leaseManager) {
+        res.status(200).json(successResponse({ leases: [], message: 'Lease manager not configured' }, req.requestId));
+        return;
+      }
+      const leases = await deps.leaseManager.getAll();
+      res.status(200).json(successResponse({ leases }, req.requestId));
+    } catch (error) { next(error); }
   });
 
   return router;

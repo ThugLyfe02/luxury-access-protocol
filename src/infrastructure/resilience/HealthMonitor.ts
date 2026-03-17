@@ -11,6 +11,7 @@
 
 import { CircuitBreaker, CircuitBreakerDiagnostics } from './CircuitBreaker';
 import { ResilienceConfig } from './ResilienceConfig';
+import { WorkerRegistry, WorkerRegistration } from '../coordination/WorkerRegistry';
 
 export type SystemHealth = 'HEALTHY' | 'DEGRADED' | 'NOT_READY';
 
@@ -27,11 +28,20 @@ export interface WorkerStatus {
   readonly consecutiveFailures: number;
 }
 
+export interface ClusterWorkerInfo {
+  readonly workerId: string;
+  readonly workerType: string;
+  readonly status: string;
+  readonly startedAt: Date;
+  readonly heartbeatAt: Date;
+}
+
 export interface HealthReport {
   readonly status: SystemHealth;
   readonly checks: HealthCheckResult[];
   readonly degradedReasons: string[];
   readonly workers: WorkerStatus[];
+  readonly clusterWorkers: ClusterWorkerInfo[];
   readonly breakers: CircuitBreakerDiagnostics[];
   readonly timestamp: Date;
 }
@@ -46,16 +56,19 @@ export class HealthMonitor {
   private readonly breakers: CircuitBreaker[];
   private readonly workerStatuses = new Map<string, WorkerStatus>();
   private readonly backlogProvider: BacklogProvider | null;
+  private readonly workerRegistry: WorkerRegistry | null;
   private dbHealthy = true;
 
   constructor(
     config: ResilienceConfig,
     breakers: CircuitBreaker[],
     backlogProvider: BacklogProvider | null = null,
+    workerRegistry: WorkerRegistry | null = null,
   ) {
     this.config = config;
     this.breakers = breakers;
     this.backlogProvider = backlogProvider;
+    this.workerRegistry = workerRegistry;
   }
 
   /** Update DB connectivity status */
@@ -114,7 +127,7 @@ export class HealthMonitor {
       }
     }
 
-    // 3. Worker health
+    // 3. Worker health (local in-memory view)
     const now = Date.now();
     for (const ws of this.workerStatuses.values()) {
       const stale = ws.lastHeartbeat
@@ -168,6 +181,30 @@ export class HealthMonitor {
       }
     }
 
+    // 5. Cluster-wide worker view (from WorkerRegistry if available)
+    let clusterWorkers: ClusterWorkerInfo[] = [];
+    if (this.workerRegistry) {
+      try {
+        const registrations = await this.workerRegistry.getRunning();
+        clusterWorkers = registrations.map(r => ({
+          workerId: r.workerId,
+          workerType: r.workerType,
+          status: r.status,
+          startedAt: r.startedAt,
+          heartbeatAt: r.heartbeatAt,
+        }));
+
+        // Check for stale cluster workers
+        const staleWorkers = await this.workerRegistry.findStaleWorkers(this.config.workerHeartbeatStaleMs);
+        if (staleWorkers.length > 0) {
+          degradedReasons.push(`${staleWorkers.length} stale worker(s) detected in cluster`);
+        }
+      } catch {
+        // Cluster worker check failure is non-fatal
+        checks.push({ name: 'cluster-workers', healthy: false, message: 'check failed' });
+      }
+    }
+
     const status: SystemHealth = notReady ? 'NOT_READY' : degradedReasons.length > 0 ? 'DEGRADED' : 'HEALTHY';
 
     return {
@@ -175,6 +212,7 @@ export class HealthMonitor {
       checks,
       degradedReasons,
       workers: Array.from(this.workerStatuses.values()),
+      clusterWorkers,
       breakers: this.breakers.map(b => b.diagnostics()),
       timestamp: new Date(),
     };

@@ -5,12 +5,19 @@ import { getPool } from './connection';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const MIGRATION_FILES = [
+  'migration.sql',
+  'migration-002-coordination.sql',
+];
+
 /**
- * Runs the schema migration idempotently.
+ * Runs all schema migrations idempotently in order.
  * Safe to call on every startup — all DDL uses IF NOT EXISTS / DO $$.
  */
 export async function runMigration(): Promise<void> {
-  const sql = readFileSync(resolve(__dirname, 'migration.sql'), 'utf-8');
   const pool = getPool();
-  await pool.query(sql);
+  for (const file of MIGRATION_FILES) {
+    const sql = readFileSync(resolve(__dirname, file), 'utf-8');
+    await pool.query(sql);
+  }
 }

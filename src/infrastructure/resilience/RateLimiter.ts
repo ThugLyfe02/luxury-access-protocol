@@ -20,6 +20,14 @@ export interface RateLimiterAdapter {
 }
 
 /**
+ * Extended adapter interface for distributed (async) rate limiting.
+ * Adapters that implement this can be used with checkAsync().
+ */
+export interface AsyncRateLimiterAdapter extends RateLimiterAdapter {
+  checkAndIncrement(key: string, now: number): Promise<{ count: number; windowStart: number }>;
+}
+
+/**
  * In-memory sliding-window rate limiter.
  * Explicit: this is a dev/test/single-process implementation.
  * For distributed deployment, replace the adapter with Redis-backed storage.
@@ -101,6 +109,31 @@ export class RateLimiter {
       allowed: true,
       remaining: this.maxRequests - existing.count,
       resetAt: existing.windowStart + this.windowMs,
+    };
+  }
+
+  /**
+   * Async check for distributed rate limiting.
+   * Uses the adapter's checkAndIncrement if available (AsyncRateLimiterAdapter).
+   * Falls back to synchronous check() otherwise.
+   */
+  async checkAsync(key: string, now: number = Date.now()): Promise<RateLimitResult> {
+    if (!('checkAndIncrement' in this.adapter)) {
+      return this.check(key, now);
+    }
+    const asyncAdapter = this.adapter as AsyncRateLimiterAdapter;
+
+    const { count, windowStart } = await asyncAdapter.checkAndIncrement(key, now);
+    const resetAt = windowStart + this.windowMs;
+
+    if (count > this.maxRequests) {
+      return { allowed: false, remaining: 0, resetAt };
+    }
+
+    return {
+      allowed: true,
+      remaining: this.maxRequests - count,
+      resetAt,
     };
   }
 

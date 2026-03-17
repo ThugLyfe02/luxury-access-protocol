@@ -11,9 +11,9 @@ export function createRateLimitMiddleware(
   limiter: RateLimiter,
   keyExtractor: (req: Request) => string = defaultKeyExtractor,
 ) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const key = keyExtractor(req);
-    const result: RateLimitResult = limiter.check(key);
+    const result: RateLimitResult = await limiter.checkAsync(key);
 
     res.setHeader('X-RateLimit-Limit', limiter.config.maxRequests);
     res.setHeader('X-RateLimit-Remaining', Math.max(0, result.remaining));

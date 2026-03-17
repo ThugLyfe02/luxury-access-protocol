@@ -76,6 +76,10 @@ import { CircuitBreaker } from './infrastructure/resilience/CircuitBreaker';
 import { HealthMonitor } from './infrastructure/resilience/HealthMonitor';
 import { RateLimiter, InMemoryRateLimiterAdapter } from './infrastructure/resilience/RateLimiter';
 import { StructuredLogger, ConsoleLogSink } from './infrastructure/resilience/StructuredLogger';
+import { generateWorkerId } from './infrastructure/coordination/WorkerIdentity';
+import { WorkerRegistry } from './infrastructure/coordination/WorkerRegistry';
+import { DistributedLeaseManager } from './infrastructure/coordination/DistributedLeaseManager';
+import { PostgresRateLimiterAdapter } from './infrastructure/coordination/PostgresRateLimiterAdapter';
 import { MetricsRegistry } from './observability/metrics/MetricsRegistry';
 import { SystemMetricsCollector } from './observability/collectors/SystemMetricsCollector';
 import { WorkerMetricsCollector } from './observability/collectors/WorkerMetricsCollector';
@@ -100,6 +104,13 @@ const tokenService = new JwtTokenService(authConfig);
 
 // --- Resilience Config ---
 const resilienceConfig = loadResilienceConfig();
+
+// --- Worker Identity ---
+const workerId = generateWorkerId();
+
+// --- Coordination Infrastructure ---
+const workerRegistry = usePostgres ? new WorkerRegistry(30_000) : null;
+const leaseManager = usePostgres ? new DistributedLeaseManager() : null;
 
 // --- Structured Logger ---
 const logger = new StructuredLogger(new ConsoleLogSink());
@@ -178,7 +189,7 @@ const healthMonitor = new HealthMonitor(resilienceConfig, allBreakers, {
     const diag = await reconciliationRepo.diagnostics();
     return (diag.countBySeverity['CRITICAL'] ?? 0);
   },
-});
+}, workerRegistry);
 
 // --- Infrastructure: Payment Provider ---
 let paymentProvider: PaymentProvider;
@@ -234,7 +245,7 @@ outboxDispatcher.register('payment.onboarding_link.create', new CreateOnboarding
 
 const outboxLogger = logger.child({ workerName: 'outbox-worker' });
 const outboxWorker = new OutboxWorker(outboxRepo, outboxDispatcher, {
-  workerId: `worker-${process.pid}`,
+  workerId,
   batchSize: resilienceConfig.outboxWorkerBatchSize,
   pollIntervalMs: 1000,
   staleLeaseThresholdMs: 60_000,
@@ -248,24 +259,39 @@ const outboxWorker = new OutboxWorker(outboxRepo, outboxDispatcher, {
 const providerSnapshotAdapter = new StubProviderSnapshotAdapter();
 const repairExecutor = new RepairExecutor(reconciliationRepo, rentalRepo, freezeRepo, manualReviewRepo, auditLogRepo);
 const reconciliationEngine = new ReconciliationEngine(reconciliationRepo, rentalRepo, providerSnapshotAdapter, repairExecutor, auditLogRepo);
-const reconciliationWorker = new ReconciliationWorker(reconciliationEngine, {
-  intervalMs: 300_000,
-  triggeredBy: 'reconciliation-worker',
-});
+const reconLogger = logger.child({ workerName: 'reconciliation-worker' });
+const reconciliationWorker = new ReconciliationWorker(
+  reconciliationEngine,
+  { intervalMs: 300_000, triggeredBy: 'reconciliation-worker' },
+  leaseManager ?? undefined,
+  workerId,
+  {
+    info: (msg, meta) => reconLogger.info(msg, meta),
+    warn: (msg, meta) => reconLogger.warn(msg, meta),
+    error: (msg, meta) => reconLogger.error(msg, meta),
+  },
+);
 
 // --- Rate Limiters ---
+function createRateLimitAdapter() {
+  if (usePostgres) {
+    return new PostgresRateLimiterAdapter(resilienceConfig.rateLimitWindowMs);
+  }
+  return new InMemoryRateLimiterAdapter();
+}
+
 const rentalRateLimiter = new RateLimiter(
-  new InMemoryRateLimiterAdapter(),
+  createRateLimitAdapter(),
   resilienceConfig.rateLimitWindowMs,
   resilienceConfig.rateLimitRentalInitiation,
 );
 const ownerRateLimiter = new RateLimiter(
-  new InMemoryRateLimiterAdapter(),
+  createRateLimitAdapter(),
   resilienceConfig.rateLimitWindowMs,
   resilienceConfig.rateLimitOwnerOnboarding,
 );
 const adminRepairRateLimiter = new RateLimiter(
-  new InMemoryRateLimiterAdapter(),
+  createRateLimitAdapter(),
   resilienceConfig.rateLimitWindowMs,
   resilienceConfig.rateLimitAdminRepair,
 );
@@ -349,6 +375,8 @@ const app = createApp({
     healthMonitor,
     breakers: allBreakers,
     resilienceConfig,
+    workerRegistry: workerRegistry ?? undefined,
+    leaseManager: leaseManager ?? undefined,
   },
   observability: {
     registry: metricsRegistry,
@@ -373,6 +401,14 @@ async function start(): Promise<void> {
     logger.info('Running schema migration', { operation: 'startup' });
     await runMigration();
     logger.info('Schema migration complete', { operation: 'startup' });
+
+    // Register workers in the cluster
+    if (workerRegistry) {
+      await workerRegistry.register(workerId, 'api', { pid: process.pid });
+      workerRegistry.startHeartbeat(workerId);
+      await workerRegistry.cleanupStopped();
+      logger.info('Worker registered', { operation: 'startup', workerId });
+    }
   }
 
   // Start workers
@@ -394,21 +430,51 @@ async function start(): Promise<void> {
 }
 
 // Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, shutting down', { operation: 'shutdown' });
-  outboxWorker.stop();
-  reconciliationWorker.stop();
-  if (usePostgres) await closePool();
-  process.exit(0);
-});
+async function gracefulShutdown(signal: string): Promise<void> {
+  logger.info(`${signal} received, shutting down`, { operation: 'shutdown', workerId });
 
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received, shutting down', { operation: 'shutdown' });
+  // 1. Stop polling loops
   outboxWorker.stop();
   reconciliationWorker.stop();
-  if (usePostgres) await closePool();
+
+  if (usePostgres) {
+    // 2. Release outbox event leases back to PENDING
+    try {
+      const released = await outboxWorker.releaseAllLeases();
+      if (released > 0) {
+        logger.info('Released outbox event leases', { operation: 'shutdown', released, workerId });
+      }
+    } catch (err) {
+      logger.warn('Failed to release outbox leases', { operation: 'shutdown', error: err instanceof Error ? err.message : String(err) });
+    }
+
+    // 3. Release singleton leases (reconciliation)
+    try {
+      await reconciliationWorker.releaseLease();
+    } catch (err) {
+      logger.warn('Failed to release reconciliation lease', { operation: 'shutdown', error: err instanceof Error ? err.message : String(err) });
+    }
+
+    // 4. Stop heartbeat and mark worker as STOPPED
+    if (workerRegistry) {
+      workerRegistry.stopHeartbeat();
+      try {
+        await workerRegistry.deregister(workerId);
+        logger.info('Worker deregistered', { operation: 'shutdown', workerId });
+      } catch (err) {
+        logger.warn('Failed to deregister worker', { operation: 'shutdown', error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    // 5. Close DB pool
+    await closePool();
+  }
+
   process.exit(0);
-});
+}
+
+process.on('SIGTERM', () => { gracefulShutdown('SIGTERM'); });
+process.on('SIGINT', () => { gracefulShutdown('SIGINT'); });
 
 start().catch((err) => {
   logger.error('Failed to start server', { operation: 'startup', error: err instanceof Error ? err.message : String(err) });
