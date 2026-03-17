@@ -1,4 +1,4 @@
-import express from 'express';
+import { createApp } from './http/app';
 import { InitiateRentalService } from './application/services/InitiateRentalService';
 import { MarketplacePaymentService } from './application/services/MarketplacePaymentService';
 import { StripePaymentProvider } from './infrastructure/payments/StripePaymentProvider';
@@ -15,19 +15,15 @@ import { PostgresUserRepository } from './infrastructure/repositories/PostgresUs
 import { PostgresWatchRepository } from './infrastructure/repositories/PostgresWatchRepository';
 import { PostgresRentalRepository } from './infrastructure/repositories/PostgresRentalRepository';
 import { ExposureConfig } from './domain/services/PlatformExposureEngine';
-import { ManualReviewEngine } from './application/services/ManualReviewEngine';
-import { AdminAuditQueryService } from './application/services/AdminAuditQueryService';
-import { AdminRentalInspectionService } from './application/services/AdminRentalInspectionService';
-import { AdminClaimService } from './application/services/AdminClaimService';
-import { AdminExposureQueryService } from './application/services/AdminExposureQueryService';
 import { AuditLog } from './application/audit/AuditLog';
 import { InMemoryAuditSink } from './infrastructure/audit/InMemoryAuditSink';
-import { RentalController } from './http/rentalController';
 import {
   WebhookController,
   InMemoryProcessedWebhookEventStore,
   WebhookVerifier,
 } from './http/webhookController';
+import { InMemoryIdempotencyStore } from './http/idempotency/IdempotencyStore';
+import { InMemoryConnectedAccountStore } from './http/routes/ownerRoutes';
 import { PaymentProvider } from './domain/interfaces/PaymentProvider';
 import { UserRepository } from './domain/interfaces/UserRepository';
 import { WatchRepository } from './domain/interfaces/WatchRepository';
@@ -41,12 +37,10 @@ import { closePool } from './infrastructure/db/connection';
  * All dependencies are wired here — no service locator, no DI container.
  * Explicit constructor injection only.
  *
- * When DATABASE_URL is set, Postgres-backed repositories are used with
- * the schema auto-migrated on startup. Otherwise falls back to in-memory
- * repositories for local development and testing.
- *
- * When STRIPE_SECRET_KEY is set, real Stripe integration is used.
- * Otherwise a stub provider is used for testing.
+ * Modes:
+ *   DATABASE_URL set → Postgres repositories + auto-migration
+ *   STRIPE_SECRET_KEY set → real Stripe integration
+ *   Otherwise → in-memory repositories + stub payment provider
  *
  * Known gaps:
  * - No real auth middleware (actor derived from request body)
@@ -91,8 +85,6 @@ if (useStripe) {
   );
   webhookVerifier = (rawBody, signature) => webhookHandler.processWebhook(rawBody, signature);
 } else {
-  // Stub provider for testing without Stripe credentials.
-  // All methods throw "Not implemented" — tests use mocks instead.
   paymentProvider = {
     createConnectedAccount: async () => { throw new Error('Stripe not configured'); },
     createOnboardingLink: async () => { throw new Error('Stripe not configured'); },
@@ -116,46 +108,16 @@ const exposureConfig: ExposureConfig = {
 const auditSink = new InMemoryAuditSink();
 const auditLog = new AuditLog(auditSink);
 
-// --- Webhook Event Dedup ---
+// --- Stores ---
 const processedEvents = new InMemoryProcessedWebhookEventStore();
+const idempotencyStore = new InMemoryIdempotencyStore();
+const connectedAccountStore = new InMemoryConnectedAccountStore();
 
 // --- Application Services ---
 const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog);
 const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog);
-const manualReviewEngine = new ManualReviewEngine(reviewRepo, auditLog);
-
-// --- Admin / Ops Services ---
-const adminAuditQueryService = new AdminAuditQueryService(auditLog);
-const adminRentalInspectionService = new AdminRentalInspectionService({
-  rentalRepo,
-  reviewRepo,
-  claimRepo,
-});
-const adminClaimService = new AdminClaimService({
-  claimRepo,
-  insuranceRepo,
-  auditLog,
-});
-const adminExposureQueryService = new AdminExposureQueryService({
-  rentalRepo,
-  watchRepo,
-  insuranceRepo,
-  exposureConfig,
-});
 
 // --- HTTP Controllers ---
-const rentalController = new RentalController({
-  initiateRentalService,
-  userRepo,
-  watchRepo,
-  rentalRepo,
-  kycRepo,
-  insuranceRepo,
-  claimRepo,
-  reviewRepo,
-  exposureConfig,
-});
-
 const webhookController = new WebhookController({
   paymentService: marketplacePaymentService,
   rentalRepo,
@@ -164,24 +126,30 @@ const webhookController = new WebhookController({
   verifyWebhook: webhookVerifier,
 });
 
-// --- Express App ---
-const app = express();
-
-// Stripe webhooks need the raw body for signature verification.
-// Use express.raw() for the webhook path and express.json() for everything else.
-app.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
-app.use(express.json());
-
-// --- Routes ---
-app.post('/rentals', (req, res) => rentalController.initiateRental(req, res));
-app.post('/webhooks/stripe', (req, res) => webhookController.handleStripeEvent(req, res));
-
-app.get('/health', (_req, res) => {
-  res.status(200).json({
-    status: 'ok',
+// --- App ---
+const app = createApp({
+  health: {
     persistence: usePostgres ? 'postgres' : 'memory',
     stripe: useStripe ? 'live' : 'stub',
-  });
+  },
+  rental: {
+    initiateRentalService,
+    userRepo,
+    watchRepo,
+    rentalRepo,
+    kycRepo,
+    insuranceRepo,
+    claimRepo,
+    reviewRepo,
+    exposureConfig,
+    idempotencyStore,
+  },
+  owner: {
+    paymentProvider,
+    userRepo,
+    connectedAccountStore,
+  },
+  webhookController,
 });
 
 // --- Start ---
