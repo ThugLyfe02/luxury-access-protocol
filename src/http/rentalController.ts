@@ -141,6 +141,9 @@ export class RentalController {
       // 7c. Load open insurance claims for the watch
       const watchOpenClaims = await this.claimRepo.findOpenByWatchId(watchId);
 
+      // 7d. Load active rentals for the watch (double-rental prevention)
+      const watchActiveRentals = await this.rentalRepo.findByWatchId(watchId);
+
       // 8. Delegate to application service
       const result = await this.initiateRentalService.execute(actor, {
         renter,
@@ -157,6 +160,7 @@ export class RentalController {
         renterFreezeCases,
         watchFreezeCases,
         watchOpenClaims,
+        watchActiveRentals,
         now,
       });
 
@@ -194,18 +198,26 @@ export class RentalController {
    * compute it from the in-memory store on each request.
    */
   private async computeExposureSnapshot(): Promise<ExposureSnapshot> {
-    // This is a simplified approach: we'd need all active rentals across
-    // the platform. Since we lack a "findAllActive" repo method, we
-    // return a zero snapshot. The exposure engine will still enforce
-    // config-level limits on the proposed rental.
-    //
-    // A real implementation would query a materialized view or
-    // aggregation endpoint. This is an acknowledged structural gap
-    // documented for the next phase.
+    const activeRentals = await this.rentalRepo.findAllActive();
+
+    let totalActiveWatchValue = 0;
+    let totalInsuranceCoverage = 0;
+
+    for (const rental of activeRentals) {
+      const watch = await this.watchRepo.findById(rental.watchId);
+      if (watch) {
+        totalActiveWatchValue += watch.marketValue;
+        const policy = await this.insuranceRepo.findActiveByWatchId(rental.watchId);
+        if (policy) {
+          totalInsuranceCoverage += policy.netCoverage();
+        }
+      }
+    }
+
     return {
-      totalActiveWatchValue: 0,
-      totalInsuranceCoverage: 0,
-      activeRentalCount: 0,
+      totalActiveWatchValue,
+      totalInsuranceCoverage,
+      activeRentalCount: activeRentals.length,
     };
   }
 }

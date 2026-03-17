@@ -61,6 +61,7 @@ export class InitiateRentalService {
       renterFreezeCases: ManualReviewCase[];
       watchFreezeCases: ManualReviewCase[];
       watchOpenClaims: InsuranceClaim[];
+      watchActiveRentals: Rental[];
       now: Date;
     },
   ): Promise<InitiateRentalResult> {
@@ -79,6 +80,7 @@ export class InitiateRentalService {
       renterFreezeCases,
       watchFreezeCases,
       watchOpenClaims,
+      watchActiveRentals,
       now,
     } = input;
 
@@ -104,6 +106,15 @@ export class InitiateRentalService {
       // 0d. Freeze checks — hard stop if renter or watch is frozen
       ReviewFreezePolicy.assertUserNotFrozen(renter.id, renterFreezeCases);
       ReviewFreezePolicy.assertWatchNotFrozen(watch.id, watchFreezeCases);
+
+      // 0e. Watch availability — hard stop if watch already has an active rental
+      const hasActiveRental = watchActiveRentals.some((r) => !r.isTerminal());
+      if (hasActiveRental) {
+        throw new DomainError(
+          'Watch already has an active rental',
+          'WATCH_ALREADY_RESERVED',
+        );
+      }
 
       // 1. Anti-custody firewall — hard stop
       RegulatoryGuardrails.assertNoCustodyPrincipalMutation(

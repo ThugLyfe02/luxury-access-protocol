@@ -29,6 +29,7 @@ import { UserActor, SystemActor } from '../application/auth/Actor';
 import { MarketplaceRole } from '../domain/enums/MarketplaceRole';
 import { ReviewSeverity } from '../domain/enums/ReviewSeverity';
 import { EscrowStatus } from '../domain/enums/EscrowStatus';
+import { Rental } from '../domain/entities/Rental';
 import {
   SEED_DATES,
   DEMO_EXPOSURE_CONFIG,
@@ -126,6 +127,7 @@ function defaultInput() {
     renterFreezeCases: [] as ReturnType<typeof createBlockingReviewCase>[],
     watchFreezeCases: [] as ReturnType<typeof createBlockingReviewCase>[],
     watchOpenClaims: [] as ReturnType<typeof createOpenClaim>[],
+    watchActiveRentals: [] as Rental[],
     now: SEED_DATES.now,
   };
 }

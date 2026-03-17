@@ -1,6 +1,12 @@
 import { Rental } from '../../domain/entities/Rental';
 import { RentalRepository } from '../../domain/interfaces/RentalRepository';
+import { EscrowStatus } from '../../domain/enums/EscrowStatus';
 import { DomainError } from '../../domain/errors/DomainError';
+
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+  EscrowStatus.FUNDS_RELEASED_TO_OWNER,
+  EscrowStatus.REFUNDED,
+]);
 
 interface RentalRecord {
   readonly id: string;
@@ -77,6 +83,16 @@ export class InMemoryRentalRepository implements RentalRepository {
     const results: Rental[] = [];
     for (const record of this.store.values()) {
       if (record.watchId === watchId) {
+        results.push(fromRecord(record));
+      }
+    }
+    return results;
+  }
+
+  async findAllActive(): Promise<Rental[]> {
+    const results: Rental[] = [];
+    for (const record of this.store.values()) {
+      if (!TERMINAL_STATUSES.has(record.escrowStatus)) {
         results.push(fromRecord(record));
       }
     }

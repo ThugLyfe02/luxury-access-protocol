@@ -93,6 +93,7 @@ function defaultInput() {
     renterFreezeCases: [],
     watchFreezeCases: [],
     watchOpenClaims: [],
+    watchActiveRentals: [],
     now: NOW,
   };
 }

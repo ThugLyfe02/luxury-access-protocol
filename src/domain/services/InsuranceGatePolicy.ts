@@ -1,5 +1,6 @@
 import { DomainError } from '../errors/DomainError';
 import { InsurancePolicy } from '../entities/InsurancePolicy';
+import { InsurancePolicyStatus } from '../enums/InsurancePolicyStatus';
 import { InsuranceClaim } from '../entities/InsuranceClaim';
 import { Watch } from '../entities/Watch';
 
@@ -100,7 +101,7 @@ export class InsuranceGatePolicy {
     asOf: Date,
   ): void {
     // Policy must be active or already in CLAIMED state (multiple claims possible)
-    if (!policy.isActive(asOf) && policy.status !== 'CLAIMED') {
+    if (!policy.isActive(asOf) && policy.status !== InsurancePolicyStatus.CLAIMED) {
       throw new DomainError(
         'Cannot file claim against inactive insurance policy',
         'INSURANCE_INACTIVE',

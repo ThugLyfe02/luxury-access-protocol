@@ -1,4 +1,3 @@
-import { EscrowStatus } from '../../domain/enums/EscrowStatus';
 import { RentalRepository } from '../../domain/interfaces/RentalRepository';
 import { WatchRepository } from '../../domain/interfaces/WatchRepository';
 import { InsuranceRepository } from '../../domain/interfaces/InsuranceRepository';
@@ -9,14 +8,6 @@ import {
 } from '../../domain/services/PlatformExposureEngine';
 import { Actor } from '../auth/Actor';
 import { AuthorizationGuard } from '../auth/AuthorizationGuard';
-
-/**
- * Terminal escrow statuses — rentals in these states are not active.
- */
-const TERMINAL_STATUSES: ReadonlySet<EscrowStatus> = new Set([
-  EscrowStatus.FUNDS_RELEASED_TO_OWNER,
-  EscrowStatus.REFUNDED,
-]);
 
 /**
  * Structured report of current platform exposure state.
@@ -119,24 +110,26 @@ export class AdminExposureQueryService {
    * insurance to compute coverage.
    */
   private async computeExposureSnapshot(): Promise<ExposureSnapshot> {
-    // Get all rentals for all renters — in production this would be
-    // a dedicated "findAllActive" query. Here we iterate all stored rentals.
-    // We use findByRenterId/findByWatchId, but we need a way to get all.
-    // For now, use the rental repo's internal method if available,
-    // or build the snapshot from known data.
-    //
-    // Structural limitation: RentalRepository doesn't have findAll().
-    // We return a computed snapshot from what we can observe.
-    // In production, this would be a materialized view.
-    //
-    // For the reconstruction stage, we accept this gap and return
-    // a zero snapshot with a note that production requires findAllActive().
-    //
-    // TODO: Add findAllActive() to RentalRepository in a future phase.
+    const activeRentals = await this.rentalRepo.findAllActive();
+
+    let totalActiveWatchValue = 0;
+    let totalInsuranceCoverage = 0;
+
+    for (const rental of activeRentals) {
+      const watch = await this.watchRepo.findById(rental.watchId);
+      if (watch) {
+        totalActiveWatchValue += watch.marketValue;
+        const policy = await this.insuranceRepo.findActiveByWatchId(rental.watchId);
+        if (policy) {
+          totalInsuranceCoverage += policy.netCoverage();
+        }
+      }
+    }
+
     return {
-      totalActiveWatchValue: 0,
-      totalInsuranceCoverage: 0,
-      activeRentalCount: 0,
+      totalActiveWatchValue,
+      totalInsuranceCoverage,
+      activeRentalCount: activeRentals.length,
     };
   }
 }
