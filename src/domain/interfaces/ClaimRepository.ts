@@ -5,6 +5,11 @@ export interface ClaimRepository {
   findByRentalId(rentalId: string): Promise<InsuranceClaim[]>;
   findByWatchId(watchId: string): Promise<InsuranceClaim[]>;
   findOpenByWatchId(watchId: string): Promise<InsuranceClaim[]>;
+  /**
+   * Find all open claims (FILED, UNDER_REVIEW, APPROVED) for a specific rental.
+   * Used by release gate to verify no blocking claims exist.
+   */
+  findOpenByRentalId(rentalId: string): Promise<InsuranceClaim[]>;
 
   /**
    * Persist the claim. Uses optimistic concurrency: if the stored

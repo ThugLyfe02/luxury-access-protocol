@@ -1,4 +1,5 @@
 import { InsuranceClaim } from '../../domain/entities/InsuranceClaim';
+import { InsuranceClaimStatus } from '../../domain/enums/InsuranceClaimStatus';
 import { ClaimRepository } from '../../domain/interfaces/ClaimRepository';
 import { DomainError } from '../../domain/errors/DomainError';
 
@@ -57,7 +58,12 @@ function fromRecord(record: ClaimRecord): InsuranceClaim {
   });
 }
 
-const OPEN_STATUSES = new Set(['FILED', 'UNDER_REVIEW', 'APPROVED']);
+/** Enum-safe open status set — matches InsuranceClaim.isOpen() semantics */
+const OPEN_STATUSES: ReadonlySet<string> = new Set([
+  InsuranceClaimStatus.FILED,
+  InsuranceClaimStatus.UNDER_REVIEW,
+  InsuranceClaimStatus.APPROVED,
+]);
 
 export class InMemoryClaimRepository implements ClaimRepository {
   private readonly store = new Map<string, ClaimRecord>();
@@ -91,6 +97,16 @@ export class InMemoryClaimRepository implements ClaimRepository {
     const results: InsuranceClaim[] = [];
     for (const record of this.store.values()) {
       if (record.watchId === watchId && OPEN_STATUSES.has(record.status)) {
+        results.push(fromRecord(record));
+      }
+    }
+    return results;
+  }
+
+  async findOpenByRentalId(rentalId: string): Promise<InsuranceClaim[]> {
+    const results: InsuranceClaim[] = [];
+    for (const record of this.store.values()) {
+      if (record.rentalId === rentalId && OPEN_STATUSES.has(record.status)) {
         results.push(fromRecord(record));
       }
     }

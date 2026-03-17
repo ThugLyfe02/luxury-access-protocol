@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createApp, AppDeps } from '../../src/http/app';
 import { InitiateRentalService } from '../../src/application/services/InitiateRentalService';
 import { MarketplacePaymentService } from '../../src/application/services/MarketplacePaymentService';
+import { ExposureSnapshotService } from '../../src/application/services/ExposureSnapshotService';
 import { InMemoryUserRepository } from '../../src/infrastructure/repositories/InMemoryUserRepository';
 import { InMemoryWatchRepository } from '../../src/infrastructure/repositories/InMemoryWatchRepository';
 import { InMemoryRentalRepository } from '../../src/infrastructure/repositories/InMemoryRentalRepository';
@@ -33,16 +34,19 @@ function buildApp(health: { persistence: 'postgres' | 'memory'; stripe: 'live' |
   const pp = makePaymentProvider();
   const auditLog = new AuditLog(new InMemoryAuditSink());
   const rentalRepo = new InMemoryRentalRepository();
+  const watchRepo = new InMemoryWatchRepository();
+  const insuranceRepo = new InMemoryInsuranceRepository();
 
   const deps: AppDeps = {
     health,
     rental: {
       initiateRentalService: new InitiateRentalService(pp, auditLog),
+      exposureSnapshotService: new ExposureSnapshotService({ rentalRepo, watchRepo, insuranceRepo }),
       userRepo: new InMemoryUserRepository(),
-      watchRepo: new InMemoryWatchRepository(),
+      watchRepo,
       rentalRepo,
       kycRepo: new InMemoryKycRepository(),
-      insuranceRepo: new InMemoryInsuranceRepository(),
+      insuranceRepo,
       claimRepo: new InMemoryClaimRepository(),
       reviewRepo: new InMemoryReviewRepository(),
       exposureConfig: {

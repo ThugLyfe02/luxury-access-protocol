@@ -89,6 +89,16 @@ export class InMemoryRentalRepository implements RentalRepository {
     return results;
   }
 
+  async findActiveByWatchId(watchId: string): Promise<Rental[]> {
+    const results: Rental[] = [];
+    for (const record of this.store.values()) {
+      if (record.watchId === watchId && !TERMINAL_STATUSES.has(record.escrowStatus)) {
+        results.push(fromRecord(record));
+      }
+    }
+    return results;
+  }
+
   async findAllActive(): Promise<Rental[]> {
     const results: Rental[] = [];
     for (const record of this.store.values()) {
@@ -110,6 +120,20 @@ export class InMemoryRentalRepository implements RentalRepository {
           `Rental version conflict: expected stored version ${rental.version - 1}, found ${existing.version}`,
           'VERSION_CONFLICT',
         );
+      }
+    } else {
+      // New rental INSERT — enforce double-rental prevention (matches Postgres
+      // partial unique index behavior). At most one active rental per watch.
+      for (const record of this.store.values()) {
+        if (
+          record.watchId === rental.watchId &&
+          !TERMINAL_STATUSES.has(record.escrowStatus)
+        ) {
+          throw new DomainError(
+            'Watch already has an active rental',
+            'WATCH_ALREADY_RESERVED',
+          );
+        }
       }
     }
     this.store.set(rental.id, toRecord(rental));

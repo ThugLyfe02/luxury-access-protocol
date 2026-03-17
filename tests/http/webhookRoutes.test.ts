@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createApp, AppDeps } from '../../src/http/app';
 import { InitiateRentalService } from '../../src/application/services/InitiateRentalService';
 import { MarketplacePaymentService } from '../../src/application/services/MarketplacePaymentService';
+import { ExposureSnapshotService } from '../../src/application/services/ExposureSnapshotService';
 import { InMemoryUserRepository } from '../../src/infrastructure/repositories/InMemoryUserRepository';
 import { InMemoryWatchRepository } from '../../src/infrastructure/repositories/InMemoryWatchRepository';
 import { InMemoryRentalRepository } from '../../src/infrastructure/repositories/InMemoryRentalRepository';
@@ -57,15 +58,19 @@ function makeWebhookApp(opts: {
     verifyWebhook: verifier,
   });
 
+  const watchRepo = new InMemoryWatchRepository();
+  const insuranceRepo = new InMemoryInsuranceRepository();
+
   const deps: AppDeps = {
     health: { persistence: 'memory', stripe: 'stub' },
     rental: {
       initiateRentalService: new InitiateRentalService(paymentProvider, auditLog),
+      exposureSnapshotService: new ExposureSnapshotService({ rentalRepo, watchRepo, insuranceRepo }),
       userRepo: new InMemoryUserRepository(),
-      watchRepo: new InMemoryWatchRepository(),
+      watchRepo,
       rentalRepo,
       kycRepo: new InMemoryKycRepository(),
-      insuranceRepo: new InMemoryInsuranceRepository(),
+      insuranceRepo,
       claimRepo: new InMemoryClaimRepository(),
       reviewRepo: new InMemoryReviewRepository(),
       exposureConfig: {

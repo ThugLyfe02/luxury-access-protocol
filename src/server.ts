@@ -15,6 +15,7 @@ import { PostgresUserRepository } from './infrastructure/repositories/PostgresUs
 import { PostgresWatchRepository } from './infrastructure/repositories/PostgresWatchRepository';
 import { PostgresRentalRepository } from './infrastructure/repositories/PostgresRentalRepository';
 import { ExposureConfig } from './domain/services/PlatformExposureEngine';
+import { ExposureSnapshotService } from './application/services/ExposureSnapshotService';
 import { AuditLog } from './application/audit/AuditLog';
 import { InMemoryAuditSink } from './infrastructure/audit/InMemoryAuditSink';
 import {
@@ -139,6 +140,7 @@ const app = createApp({
   },
   rental: {
     initiateRentalService,
+    exposureSnapshotService: new ExposureSnapshotService({ rentalRepo, watchRepo, insuranceRepo }),
     userRepo,
     watchRepo,
     rentalRepo,

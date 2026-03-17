@@ -6,6 +6,11 @@ export interface RentalRepository {
   findByRenterId(renterId: string): Promise<Rental[]>;
   findByWatchId(watchId: string): Promise<Rental[]>;
   /**
+   * Return all non-terminal rentals for a specific watch.
+   * Used for watch availability checks and double-rental prevention.
+   */
+  findActiveByWatchId(watchId: string): Promise<Rental[]>;
+  /**
    * Return all rentals that are not in a terminal escrow state
    * (FUNDS_RELEASED_TO_OWNER or REFUNDED).
    */

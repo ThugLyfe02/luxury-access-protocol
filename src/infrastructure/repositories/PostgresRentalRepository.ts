@@ -99,6 +99,19 @@ export class PostgresRentalRepository implements RentalRepository {
     return rows.map((row: Record<string, unknown>) => this.hydrateRow(row));
   }
 
+  async findActiveByWatchId(watchId: string): Promise<Rental[]> {
+    const { rows } = await this.query(
+      `SELECT id, renter_id, watch_id, rental_price, escrow_status,
+              external_payment_intent_id, return_confirmed, dispute_open,
+              created_at, version
+       FROM rentals
+       WHERE watch_id = $1 AND escrow_status NOT IN ($2, $3)`,
+      [watchId, TERMINAL_STATUSES[0], TERMINAL_STATUSES[1]],
+    );
+
+    return rows.map((row: Record<string, unknown>) => this.hydrateRow(row));
+  }
+
   async findAllActive(): Promise<Rental[]> {
     const { rows } = await this.query(
       `SELECT id, renter_id, watch_id, rental_price, escrow_status,

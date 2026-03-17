@@ -2,6 +2,7 @@ import { vi } from 'vitest';
 import { createApp, AppDeps } from '../../src/http/app';
 import { InitiateRentalService } from '../../src/application/services/InitiateRentalService';
 import { MarketplacePaymentService } from '../../src/application/services/MarketplacePaymentService';
+import { ExposureSnapshotService } from '../../src/application/services/ExposureSnapshotService';
 import { InMemoryUserRepository } from '../../src/infrastructure/repositories/InMemoryUserRepository';
 import { InMemoryWatchRepository } from '../../src/infrastructure/repositories/InMemoryWatchRepository';
 import { InMemoryRentalRepository } from '../../src/infrastructure/repositories/InMemoryRentalRepository';
@@ -46,6 +47,11 @@ export function makeTestApp(overrides?: {
   const connectedAccountStore = new InMemoryConnectedAccountStore();
   const processedEvents = new InMemoryProcessedWebhookEventStore();
 
+  const exposureSnapshotService = new ExposureSnapshotService({
+    rentalRepo,
+    watchRepo,
+    insuranceRepo,
+  });
   const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog);
   const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog);
 
@@ -63,6 +69,7 @@ export function makeTestApp(overrides?: {
     health: { persistence: 'memory', stripe: 'stub' },
     rental: {
       initiateRentalService,
+      exposureSnapshotService,
       userRepo,
       watchRepo,
       rentalRepo,

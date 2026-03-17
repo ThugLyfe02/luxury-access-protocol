@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { InitiateRentalService } from '../../application/services/InitiateRentalService';
+import { ExposureSnapshotService } from '../../application/services/ExposureSnapshotService';
 import { UserActor } from '../../application/auth/Actor';
 import { MarketplaceRole } from '../../domain/enums/MarketplaceRole';
 import { UserRepository } from '../../domain/interfaces/UserRepository';
@@ -23,6 +24,7 @@ import { AuthenticatedActor } from '../../auth/types/AuthenticatedActor';
 
 export interface RentalRouteDeps {
   initiateRentalService: InitiateRentalService;
+  exposureSnapshotService: ExposureSnapshotService;
   userRepo: UserRepository;
   watchRepo: WatchRepository;
   rentalRepo: RentalRepository;
@@ -127,24 +129,14 @@ export function createRentalRoutes(deps: RentalRouteDeps): Router {
         .filter((r) => r.createdAt >= oneDayAgo)
         .map((r) => r.createdAt);
 
-      // 7. Compute exposure snapshot
-      const activeRentals = await deps.rentalRepo.findAllActive();
-      let totalActiveWatchValue = 0;
-      let totalInsuranceCoverage = 0;
-      for (const rental of activeRentals) {
-        const w = await deps.watchRepo.findById(rental.watchId);
-        if (w) {
-          totalActiveWatchValue += w.marketValue;
-          const policy = await deps.insuranceRepo.findActiveByWatchId(rental.watchId);
-          if (policy) totalInsuranceCoverage += policy.netCoverage();
-        }
-      }
+      // 7. Compute exposure snapshot from repository-backed truth
+      const exposureSnapshot = await deps.exposureSnapshotService.computeSnapshot();
 
       // 8. Load freeze/claim/active rental data
       const renterFreezeCases = await deps.reviewRepo.findUnresolvedByFreezeTarget('User', renterId);
       const watchFreezeCases = await deps.reviewRepo.findUnresolvedByFreezeTarget('Watch', watchId);
       const watchOpenClaims = await deps.claimRepo.findOpenByWatchId(watchId);
-      const watchActiveRentals = await deps.rentalRepo.findByWatchId(watchId);
+      const watchActiveRentals = await deps.rentalRepo.findActiveByWatchId(watchId);
 
       // 9. Build domain actor from verified auth context
       const domainActor: UserActor = {
@@ -165,11 +157,7 @@ export function createRentalRoutes(deps: RentalRouteDeps): Router {
         watchInsurance,
         renterTier,
         recentRentalTimestamps,
-        exposureSnapshot: {
-          totalActiveWatchValue,
-          totalInsuranceCoverage,
-          activeRentalCount: activeRentals.length,
-        },
+        exposureSnapshot,
         exposureConfig: deps.exposureConfig,
         renterFreezeCases,
         watchFreezeCases,
