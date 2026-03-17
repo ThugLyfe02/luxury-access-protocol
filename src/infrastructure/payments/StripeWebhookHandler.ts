@@ -29,6 +29,7 @@ const SUPPORTED_STRIPE_EVENTS = new Set([
   'checkout.session.completed',
   'payment_intent.amount_capturable_updated',
   'payment_intent.succeeded',
+  'payment_intent.payment_failed',
   'charge.refunded',
   'charge.dispute.created',
   'charge.dispute.closed',
@@ -44,6 +45,8 @@ function mapStripeEventType(stripeType: string): NormalizedEventType | null {
       return NormalizedEventType.PAYMENT_AUTHORIZED;
     case 'payment_intent.succeeded':
       return NormalizedEventType.PAYMENT_CAPTURED;
+    case 'payment_intent.payment_failed':
+      return NormalizedEventType.PAYMENT_FAILED;
     case 'charge.refunded':
       return NormalizedEventType.PAYMENT_REFUNDED;
     case 'charge.dispute.created':
@@ -164,7 +167,8 @@ export class StripeWebhookHandler {
         return null;
       }
       case 'payment_intent.amount_capturable_updated':
-      case 'payment_intent.succeeded': {
+      case 'payment_intent.succeeded':
+      case 'payment_intent.payment_failed': {
         // Object IS the payment intent
         return typeof obj.id === 'string' ? obj.id : null;
       }

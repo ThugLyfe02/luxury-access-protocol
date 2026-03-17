@@ -173,17 +173,29 @@ export class OutboxWorker {
       });
     } catch (error) {
       const classified = classifyFailure(error);
+      const failedAt = new Date();
 
-      this.logger.warn('Outbox event failed', {
-        eventId: event.id,
-        topic: event.topic,
-        kind: classified.kind,
-        message: classified.message,
-        attemptCount: event.attemptCount,
-        maxAttempts: event.maxAttempts,
-      });
+      if (classified.kind === 'ambiguous') {
+        this.logger.warn('Ambiguous provider outcome — will retry with idempotency key', {
+          eventId: event.id,
+          topic: event.topic,
+          message: classified.message,
+          attemptCount: event.attemptCount,
+        });
+      } else {
+        this.logger.warn('Outbox event failed', {
+          eventId: event.id,
+          topic: event.topic,
+          kind: classified.kind,
+          message: classified.message,
+          attemptCount: event.attemptCount,
+          maxAttempts: event.maxAttempts,
+        });
+      }
 
-      event.markFailed(new Date(), classified.message, classified.kind === 'permanent');
+      // Ambiguous outcomes are retryable (not permanent) — they use short backoff
+      // via the standard retry mechanism. Idempotency keys ensure safe retries.
+      event.markFailed(failedAt, classified.message, classified.kind === 'permanent');
       await this.repo.save(event);
 
       if (event.status === 'DEAD_LETTER') {

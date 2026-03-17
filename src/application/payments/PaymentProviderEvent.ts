@@ -18,6 +18,8 @@ export enum NormalizedEventType {
   PAYMENT_AUTHORIZED = 'payment_authorized',
   /** Payment captured — funds moved from renter to provider custody */
   PAYMENT_CAPTURED = 'payment_captured',
+  /** Payment failed — provider explicitly rejected the payment attempt */
+  PAYMENT_FAILED = 'payment_failed',
   /** Refund processed — provider returned funds to renter */
   PAYMENT_REFUNDED = 'payment_refunded',
   /** Dispute/chargeback opened — blocks release */

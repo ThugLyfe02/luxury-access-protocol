@@ -70,6 +70,7 @@ import { PostgresReconciliationRepository } from './infrastructure/repositories/
 import { ReconciliationEngine } from './application/services/ReconciliationEngine';
 import { RepairExecutor } from './application/services/RepairExecutor';
 import { StubProviderSnapshotAdapter } from './infrastructure/reconciliation/StubProviderSnapshotAdapter';
+import { StripeProviderSnapshotAdapter } from './infrastructure/reconciliation/StripeProviderSnapshotAdapter';
 import { ReconciliationWorker } from './infrastructure/reconciliation/ReconciliationWorker';
 import { loadResilienceConfig } from './infrastructure/resilience/ResilienceConfig';
 import { CircuitBreaker } from './infrastructure/resilience/CircuitBreaker';
@@ -194,11 +195,13 @@ const healthMonitor = new HealthMonitor(resilienceConfig, allBreakers, {
 // --- Infrastructure: Payment Provider ---
 let paymentProvider: PaymentProvider;
 let webhookVerifier: WebhookVerifier;
+let stripeInstance: import('stripe').default | null = null;
 
 if (useStripe) {
   const stripeConfig = loadStripeConfig();
   const stripeProvider = new StripePaymentProvider(stripeConfig);
   paymentProvider = stripeProvider;
+  stripeInstance = stripeProvider.getStripeInstance();
 
   const webhookHandler = new StripeWebhookHandler(
     stripeProvider.getStripeInstance(),
@@ -256,7 +259,9 @@ const outboxWorker = new OutboxWorker(outboxRepo, outboxDispatcher, {
 });
 
 // --- Reconciliation Infrastructure ---
-const providerSnapshotAdapter = new StubProviderSnapshotAdapter();
+const providerSnapshotAdapter = stripeInstance
+  ? new StripeProviderSnapshotAdapter(stripeInstance)
+  : new StubProviderSnapshotAdapter();
 const repairExecutor = new RepairExecutor(reconciliationRepo, rentalRepo, freezeRepo, manualReviewRepo, auditLogRepo);
 const reconciliationEngine = new ReconciliationEngine(reconciliationRepo, rentalRepo, providerSnapshotAdapter, repairExecutor, auditLogRepo);
 const reconLogger = logger.child({ workerName: 'reconciliation-worker' });

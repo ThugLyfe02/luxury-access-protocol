@@ -32,6 +32,24 @@ export function loadStripeConfig(): StripeConfig {
 
   const secretKey = assertEnv('STRIPE_SECRET_KEY');
   const webhookSecret = assertEnv('STRIPE_WEBHOOK_SECRET');
+
+  // Validate key prefix matches environment
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  if (nodeEnv === 'production' && secretKey.startsWith('sk_test_')) {
+    throw new Error('FATAL: sk_test_ key detected in production. Refusing to start.');
+  }
+  if (nodeEnv === 'production' && !secretKey.startsWith('sk_live_')) {
+    throw new Error('FATAL: Stripe secret key must start with sk_live_ in production.');
+  }
+  if (nodeEnv !== 'production' && secretKey.startsWith('sk_live_')) {
+    throw new Error('FATAL: sk_live_ key detected in non-production environment. Refusing to start.');
+  }
+
+  // Validate webhook secret format
+  if (!webhookSecret.startsWith('whsec_')) {
+    throw new Error('STRIPE_WEBHOOK_SECRET must start with whsec_');
+  }
+
   const connectCountry = readEnv('STRIPE_CONNECT_COUNTRY', 'US');
   const platformFeeBpsRaw = readEnv('STRIPE_PLATFORM_FEE_BPS', '200');
   const successUrl = readEnv('STRIPE_SUCCESS_URL', 'https://localhost:3000/checkout/success');

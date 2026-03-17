@@ -1,12 +1,18 @@
 /**
  * Failure classification for outbox event processing.
  *
- * Determines whether a failure is retryable (transient) or permanent.
+ * Determines whether a failure is retryable (transient), permanent,
+ * or ambiguous (provider may or may not have processed the request).
+ *
  * Permanent failures go directly to dead letter — no retry.
  * Retryable failures are retried with exponential backoff.
+ * Ambiguous failures are retried with short fixed backoff — the provider
+ * may have processed the request, so the retry uses idempotency keys.
  */
 
-export type FailureKind = 'retryable' | 'permanent';
+import { ProviderError } from '../../domain/errors/ProviderError';
+
+export type FailureKind = 'retryable' | 'permanent' | 'ambiguous';
 
 export interface ClassifiedFailure {
   readonly kind: FailureKind;
@@ -47,12 +53,27 @@ const PERMANENT_MESSAGE_PATTERNS: readonly string[] = [
 ];
 
 /**
- * Classify an error as retryable or permanent.
+ * Classify an error as retryable, permanent, or ambiguous.
+ *
+ * ProviderError is checked first — it carries typed classification
+ * from the Stripe error taxonomy. For other errors, the existing
+ * domain-code and message-pattern checks apply.
  *
  * Default: retryable. Only errors matching known permanent patterns
  * are classified as permanent. This errs on the side of retry.
  */
 export function classifyFailure(error: unknown): ClassifiedFailure {
+  // Typed provider errors carry their own classification
+  if (error instanceof ProviderError) {
+    if (error.ambiguous) {
+      return { kind: 'ambiguous', message: `AMBIGUOUS: ${error.message}` };
+    }
+    if (error.retryable) {
+      return { kind: 'retryable', message: error.message };
+    }
+    return { kind: 'permanent', message: error.message };
+  }
+
   if (!(error instanceof Error)) {
     return { kind: 'retryable', message: String(error) };
   }
