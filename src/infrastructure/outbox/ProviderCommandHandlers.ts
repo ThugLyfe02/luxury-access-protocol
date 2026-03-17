@@ -103,10 +103,15 @@ export class RefundPaymentHandler implements OutboxEventHandler {
  * This ensures reconciliation can verify transfer truth using real
  * provider identifiers.
  *
- * Replay safety:
+ * Crash-window safety:
  * - Provider call is idempotent (Stripe idempotency key: transfer_{rentalId})
  * - If rental is already in FUNDS_RELEASED_TO_OWNER, write-back is skipped
- * - OCC/version conflict on save causes outbox retry (not corruption)
+ * - Write-back failure does NOT prevent the handler from returning success.
+ *   The real transferId is always returned so the outbox event captures it
+ *   in its result field. This ensures provider truth is never lost even if
+ *   the Rental write-back fails due to OCC conflict, dispute lock, or crash.
+ * - Reconciliation uses the outbox event result as a fallback when
+ *   Rental.externalTransferId is missing.
  */
 export class TransferToOwnerHandler implements OutboxEventHandler {
   constructor(
@@ -124,8 +129,17 @@ export class TransferToOwnerHandler implements OutboxEventHandler {
       amount, connectedAccountId, rentalId,
     });
 
+    // Provider succeeded — the real transferId MUST be returned regardless
+    // of write-back outcome so the outbox event captures it durably.
     if (this.rentalRepo) {
-      await this.completeRentalRelease(rentalId, result.transferId);
+      try {
+        await this.completeRentalRelease(rentalId, result.transferId);
+      } catch {
+        // Write-back failed (OCC conflict, dispute lock, etc.)
+        // Provider truth is preserved in the returned result — the outbox
+        // event will be marked SUCCEEDED with { transferId } in its result
+        // field, enabling reconciliation recovery.
+      }
     }
 
     return { transferId: result.transferId };

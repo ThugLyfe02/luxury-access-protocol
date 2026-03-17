@@ -2,6 +2,7 @@ import { ReconciliationRun } from '../../domain/entities/ReconciliationRun';
 import { ReconciliationFinding } from '../../domain/entities/ReconciliationFinding';
 import { ReconciliationRepository } from '../../domain/interfaces/ReconciliationRepository';
 import { RentalRepository } from '../../domain/interfaces/RentalRepository';
+import { OutboxRepository } from '../../domain/interfaces/OutboxRepository';
 import { AuditLogRepository } from '../../domain/interfaces/AuditLogRepository';
 import { AuditLogEntry } from '../../domain/entities/AuditLogEntry';
 import { Rental } from '../../domain/entities/Rental';
@@ -30,13 +31,34 @@ export interface ReconcileOneResult {
  * - Full sweep with run summary
  */
 export class ReconciliationEngine {
+  private readonly outboxRepo: OutboxRepository | null;
+
+  constructor(
+    reconciliationRepo: ReconciliationRepository,
+    rentalRepo: RentalRepository,
+    providerAdapter: ProviderSnapshotAdapter,
+    repairExecutor: RepairExecutor,
+    auditLogRepo: AuditLogRepository,
+    outboxRepo?: OutboxRepository,
+  );
+  /** @deprecated Use the 6-arg constructor. This overload preserves backward compatibility. */
+  constructor(
+    reconciliationRepo: ReconciliationRepository,
+    rentalRepo: RentalRepository,
+    providerAdapter: ProviderSnapshotAdapter,
+    repairExecutor: RepairExecutor,
+    auditLogRepo: AuditLogRepository,
+  );
   constructor(
     private readonly reconciliationRepo: ReconciliationRepository,
     private readonly rentalRepo: RentalRepository,
     private readonly providerAdapter: ProviderSnapshotAdapter,
     private readonly repairExecutor: RepairExecutor,
     private readonly auditLogRepo: AuditLogRepository,
-  ) {}
+    outboxRepo?: OutboxRepository,
+  ) {
+    this.outboxRepo = outboxRepo ?? null;
+  }
 
   /**
    * Reconcile a single rental against provider truth.
@@ -60,10 +82,25 @@ export class ReconciliationEngine {
 
       const drifts = DriftDetector.detectPaymentDrift(internal, provider);
 
-      // Transfer truth check: if funds released and transfer ID exists, verify transfer state
-      if (rental.externalTransferId) {
-        const transferSnapshot = await this.providerAdapter.fetchTransferSnapshot(rental.externalTransferId);
-        const transferDrifts = DriftDetector.detectTransferDrift(internal, transferSnapshot);
+      // Transfer truth check: verify transfer state using the best available transfer ID.
+      // Primary source: Rental.externalTransferId (set during normal write-back).
+      // Fallback source: outbox event result (set when provider succeeded but write-back failed).
+      let transferIdForReconciliation = rental.externalTransferId;
+
+      if (!transferIdForReconciliation && this.outboxRepo) {
+        transferIdForReconciliation = await this.recoverTransferIdFromOutbox(rental.id);
+      }
+
+      if (transferIdForReconciliation) {
+        const transferSnapshot = await this.providerAdapter.fetchTransferSnapshot(transferIdForReconciliation);
+        const transferDrifts = DriftDetector.detectTransferDrift(
+          // If the rental doesn't have the transfer ID but we recovered it from outbox,
+          // inject it into the internal snapshot so drift detection can run correctly.
+          transferIdForReconciliation !== rental.externalTransferId
+            ? { ...internal, externalTransferId: transferIdForReconciliation }
+            : internal,
+          transferSnapshot,
+        );
         drifts.push(...transferDrifts);
       }
 
@@ -193,6 +230,34 @@ export class ReconciliationEngine {
     await this.reconciliationRepo.saveRun(run);
 
     return result;
+  }
+
+  /**
+   * Recover transfer ID from outbox event result.
+   *
+   * When the TransferToOwnerHandler succeeds at Stripe but write-back to Rental
+   * fails (OCC conflict, dispute lock, crash), the real transferId is still
+   * captured in the outbox event's result field via markSucceeded(now, { transferId }).
+   *
+   * This method finds the SUCCEEDED transfer outbox event for a rental and
+   * extracts the transferId, enabling reconciliation to verify transfer truth
+   * even when Rental.externalTransferId is missing.
+   */
+  private async recoverTransferIdFromOutbox(rentalId: string): Promise<string | null> {
+    const events = await this.outboxRepo!.findByAggregate('Rental', rentalId);
+
+    for (const event of events) {
+      if (
+        event.topic === 'payment.transfer_to_owner' &&
+        event.status === 'SUCCEEDED' &&
+        event.result &&
+        typeof event.result.transferId === 'string'
+      ) {
+        return event.result.transferId;
+      }
+    }
+
+    return null;
   }
 
   private async logAudit(actorId: string, actionType: string, entityType: string, entityId: string): Promise<void> {

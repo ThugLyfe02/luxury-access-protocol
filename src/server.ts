@@ -263,7 +263,7 @@ const providerSnapshotAdapter = stripeInstance
   ? new StripeProviderSnapshotAdapter(stripeInstance)
   : new StubProviderSnapshotAdapter();
 const repairExecutor = new RepairExecutor(reconciliationRepo, rentalRepo, freezeRepo, manualReviewRepo, auditLogRepo);
-const reconciliationEngine = new ReconciliationEngine(reconciliationRepo, rentalRepo, providerSnapshotAdapter, repairExecutor, auditLogRepo);
+const reconciliationEngine = new ReconciliationEngine(reconciliationRepo, rentalRepo, providerSnapshotAdapter, repairExecutor, auditLogRepo, outboxRepo);
 const reconLogger = logger.child({ workerName: 'reconciliation-worker' });
 const reconciliationWorker = new ReconciliationWorker(
   reconciliationEngine,
