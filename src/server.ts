@@ -11,6 +11,10 @@ import { InMemoryReviewRepository } from './infrastructure/repositories/InMemory
 import { InMemoryClaimRepository } from './infrastructure/repositories/InMemoryClaimRepository';
 import { ExposureConfig } from './domain/services/PlatformExposureEngine';
 import { ManualReviewEngine } from './application/services/ManualReviewEngine';
+import { AdminAuditQueryService } from './application/services/AdminAuditQueryService';
+import { AdminRentalInspectionService } from './application/services/AdminRentalInspectionService';
+import { AdminClaimService } from './application/services/AdminClaimService';
+import { AdminExposureQueryService } from './application/services/AdminExposureQueryService';
 import { AuditLog } from './application/audit/AuditLog';
 import { InMemoryAuditSink } from './infrastructure/audit/InMemoryAuditSink';
 import { RentalController } from './http/rentalController';
@@ -60,6 +64,25 @@ const auditLog = new AuditLog(auditSink);
 const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog);
 const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog);
 const manualReviewEngine = new ManualReviewEngine(reviewRepo, auditLog);
+
+// --- Admin / Ops Services ---
+const adminAuditQueryService = new AdminAuditQueryService(auditLog);
+const adminRentalInspectionService = new AdminRentalInspectionService({
+  rentalRepo,
+  reviewRepo,
+  claimRepo,
+});
+const adminClaimService = new AdminClaimService({
+  claimRepo,
+  insuranceRepo,
+  auditLog,
+});
+const adminExposureQueryService = new AdminExposureQueryService({
+  rentalRepo,
+  watchRepo,
+  insuranceRepo,
+  exposureConfig,
+});
 
 // --- HTTP Controllers ---
 const rentalController = new RentalController({
