@@ -17,10 +17,24 @@ import { AuditLog } from '../audit/AuditLog';
  *
  * All fund movement is instructed via PaymentProvider — the platform
  * reacts to external payment events, it does not warehouse funds.
+ *
+ * Method naming convention:
+ * - handle*  = passive acknowledgment of an external event (webhook-driven)
+ * - request* = active operation that calls the payment provider
+ *
+ * This distinction prevents the webhook handler from re-calling the
+ * provider for operations that have already happened externally.
  */
 export class MarketplacePaymentService {
   private readonly paymentProvider: PaymentProvider;
   private readonly auditLog: AuditLog;
+
+  /**
+   * Tracks rental IDs for which a release has been initiated.
+   * Prevents duplicate transfers if releaseToOwner is retried.
+   * In production, this would be backed by a persistent store.
+   */
+  private readonly releasedRentalIds = new Set<string>();
 
   constructor(paymentProvider: PaymentProvider, auditLog: AuditLog) {
     this.paymentProvider = paymentProvider;
@@ -28,8 +42,11 @@ export class MarketplacePaymentService {
   }
 
   /**
-   * Handle external event: payment authorized by Stripe.
+   * Handle external event: payment authorized.
    * Restricted to system actors (webhook callbacks).
+   *
+   * This is a PASSIVE acknowledgment — the authorization already happened
+   * externally (renter completed checkout). No provider API call is made.
    */
   async handlePaymentAuthorized(actor: Actor, rental: Rental): Promise<void> {
     AuthorizationGuard.requireSystem(actor);
@@ -64,16 +81,19 @@ export class MarketplacePaymentService {
   }
 
   /**
-   * Handle external event: payment captured by Stripe.
-   * Restricted to system actors (webhook callbacks).
-   * Funds have been captured from renter's payment method by Stripe,
-   * not by the platform.
+   * Actively request payment capture from the external provider.
+   *
+   * Called by business logic after deterministic events (e.g., watch
+   * delivered to renter). NOT called from webhook handlers.
+   *
+   * The provider captures the previously authorized hold. After this
+   * succeeds, the rental transitions to CAPTURED.
    */
-  async handlePaymentCaptured(actor: Actor, rental: Rental): Promise<void> {
-    AuthorizationGuard.requireSystem(actor);
+  async requestCapture(actor: Actor, rental: Rental): Promise<void> {
+    AuthorizationGuard.requireSystemOrAdmin(actor);
 
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
-      'handle_payment_captured',
+      'request_capture',
       { rentalId: rental.id },
     );
 
@@ -113,15 +133,56 @@ export class MarketplacePaymentService {
   }
 
   /**
-   * Handle external event: payment refunded via Stripe.
+   * Handle external event: payment captured by provider.
    * Restricted to system actors (webhook callbacks).
-   * Stripe returns funds to renter — platform does not touch principal.
+   *
+   * PASSIVE acknowledgment — the capture already happened externally
+   * (either via our requestCapture call or a Stripe auto-capture).
+   * No provider API call is made.
    */
-  async handlePaymentRefunded(actor: Actor, rental: Rental): Promise<void> {
+  async handlePaymentCaptured(actor: Actor, rental: Rental): Promise<void> {
     AuthorizationGuard.requireSystem(actor);
 
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
-      'handle_payment_refunded',
+      'handle_payment_captured',
+      { rentalId: rental.id },
+    );
+
+    this.rejectIfTerminal(rental);
+
+    if (!rental.externalPaymentIntentId) {
+      throw new DomainError(
+        'Cannot acknowledge capture without external payment intent',
+        'INVALID_PAYMENT_TRANSITION',
+      );
+    }
+
+    const beforeState = rental.escrowStatus;
+    rental.markPaymentCaptured();
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: 'payment_captured',
+      outcome: 'success',
+      beforeState,
+      afterState: rental.escrowStatus,
+      externalRef: rental.externalPaymentIntentId,
+    });
+  }
+
+  /**
+   * Actively request refund from the external provider.
+   *
+   * Called by business logic or admin action. The provider returns
+   * funds to the renter — the platform does not handle principal.
+   */
+  async requestRefund(actor: Actor, rental: Rental): Promise<void> {
+    AuthorizationGuard.requireSystemOrAdmin(actor);
+
+    RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
+      'request_refund',
       { rentalId: rental.id },
     );
 
@@ -141,6 +202,45 @@ export class MarketplacePaymentService {
     if (!refunded) {
       throw new DomainError(
         'External payment provider failed to refund payment',
+        'INVALID_PAYMENT_TRANSITION',
+      );
+    }
+
+    const beforeState = rental.escrowStatus;
+    rental.markRefunded();
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: 'payment_refunded',
+      outcome: 'success',
+      beforeState,
+      afterState: rental.escrowStatus,
+      externalRef: rental.externalPaymentIntentId,
+    });
+  }
+
+  /**
+   * Handle external event: payment refunded via provider webhook.
+   * Restricted to system actors.
+   *
+   * PASSIVE acknowledgment — the refund already happened externally.
+   * No provider API call is made.
+   */
+  async handlePaymentRefunded(actor: Actor, rental: Rental): Promise<void> {
+    AuthorizationGuard.requireSystem(actor);
+
+    RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
+      'handle_payment_refunded',
+      { rentalId: rental.id },
+    );
+
+    this.rejectIfTerminal(rental);
+
+    if (!rental.externalPaymentIntentId) {
+      throw new DomainError(
+        'Cannot acknowledge refund without external payment intent',
         'INVALID_PAYMENT_TRANSITION',
       );
     }
@@ -310,7 +410,9 @@ export class MarketplacePaymentService {
    * ensures that if the external provider fails, the rental remains
    * in CAPTURED state and the operation can be retried.
    *
-   * This method hard-fails if any gate is unsatisfied.
+   * Idempotency: if releaseToOwner has already been called for this
+   * rental, the method rejects with RELEASE_NOT_ALLOWED. This prevents
+   * duplicate transfers even if the method is retried.
    */
   async releaseToOwner(
     actor: Actor,
@@ -328,6 +430,14 @@ export class MarketplacePaymentService {
       'release_to_owner',
       { rentalId: params.rental.id, amount: params.ownerShareAmount },
     );
+
+    // Gate 0: Idempotency — prevent duplicate releases
+    if (this.releasedRentalIds.has(params.rental.id)) {
+      throw new DomainError(
+        'Release has already been initiated for this rental',
+        'RELEASE_NOT_ALLOWED',
+      );
+    }
 
     // Gate 1: Rental must not already be in a terminal state
     if (params.rental.isTerminal()) {
@@ -378,7 +488,7 @@ export class MarketplacePaymentService {
     if (!params.ownerConnectedAccountId) {
       throw new DomainError(
         'Owner connected account ID is required for transfer',
-        'INVALID_PAYMENT_TRANSITION',
+        'CONNECTED_ACCOUNT_MISSING',
       );
     }
 
@@ -414,6 +524,11 @@ export class MarketplacePaymentService {
       connectedAccountId: params.ownerConnectedAccountId,
       rentalId: params.rental.id,
     });
+
+    // Mark as released BEFORE entity transition to prevent duplicate transfers
+    // on retry. If the entity transition fails (shouldn't happen at this point),
+    // the release is still recorded.
+    this.releasedRentalIds.add(params.rental.id);
 
     // Entity-level transition to terminal FUNDS_RELEASED_TO_OWNER state.
     // This also re-checks return + dispute gates at the entity level.

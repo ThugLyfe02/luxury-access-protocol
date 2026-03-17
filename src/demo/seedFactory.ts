@@ -179,11 +179,15 @@ let sessionCounter = 0;
 export function createMockPaymentProvider(): PaymentProvider {
   sessionCounter = 0;
   return {
-    createCheckoutSession: async (_rentalId: string, _amount: number) => {
+    createConnectedAccount: async (_params) => ({ connectedAccountId: `acct_demo_owner` }),
+    createOnboardingLink: async (_params) => ({ url: 'https://connect.stripe.com/demo' }),
+    createCheckoutSession: async (_params) => {
       sessionCounter += 1;
-      return { sessionId: `cs_demo_${String(sessionCounter).padStart(3, '0')}` };
+      return {
+        sessionId: `cs_demo_${String(sessionCounter).padStart(3, '0')}`,
+        paymentIntentId: `pi_demo_${String(sessionCounter).padStart(3, '0')}`,
+      };
     },
-    authorizePayment: async (_intentId: string) => ({ authorized: true }),
     capturePayment: async (_intentId: string) => ({ captured: true }),
     refundPayment: async (_intentId: string) => ({ refunded: true }),
     transferToConnectedAccount: async (_params) => ({

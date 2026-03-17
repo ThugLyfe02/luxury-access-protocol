@@ -6,156 +6,198 @@ import { Rental } from '../domain/entities/Rental';
 import { AuditLog } from '../application/audit/AuditLog';
 import { DomainError } from '../domain/errors/DomainError';
 import {
+  PaymentProviderEvent,
+  NormalizedEventType,
+} from '../application/payments/PaymentProviderEvent';
+import {
   WebhookEventValidator,
   PaymentEventType,
 } from '../domain/services/WebhookEventValidator';
-import { validateStripeWebhookBody } from './validation';
 import { sendError } from './errorMapper';
 
 /**
- * HTTP controller for Stripe webhook callbacks.
+ * Processed webhook event store interface.
+ * Backed by a persistent table to survive restarts.
+ */
+export interface ProcessedWebhookEventStore {
+  has(eventId: string): Promise<boolean>;
+  add(eventId: string, rentalId: string, eventType: string): Promise<void>;
+}
+
+/**
+ * In-memory implementation for development/testing.
+ */
+export class InMemoryProcessedWebhookEventStore implements ProcessedWebhookEventStore {
+  private readonly store = new Map<string, { rentalId: string; eventType: string; processedAt: Date }>();
+
+  async has(eventId: string): Promise<boolean> {
+    return this.store.has(eventId);
+  }
+
+  async add(eventId: string, rentalId: string, eventType: string): Promise<void> {
+    this.store.set(eventId, { rentalId, eventType, processedAt: new Date() });
+  }
+}
+
+/**
+ * Function type for webhook verification + normalization.
+ * Decouples the controller from the Stripe SDK.
+ */
+export type WebhookVerifier = (
+  rawBody: string | Buffer,
+  signature: string,
+) => { event: PaymentProviderEvent; stripeEventId: string } | null;
+
+/**
+ * Map from NormalizedEventType to PaymentEventType for domain validation.
+ */
+function toPaymentEventType(type: NormalizedEventType): PaymentEventType | null {
+  switch (type) {
+    case NormalizedEventType.PAYMENT_AUTHORIZED:
+      return PaymentEventType.PAYMENT_AUTHORIZED;
+    case NormalizedEventType.PAYMENT_CAPTURED:
+      return PaymentEventType.PAYMENT_CAPTURED;
+    case NormalizedEventType.PAYMENT_REFUNDED:
+      return PaymentEventType.CHARGE_REFUNDED;
+    case NormalizedEventType.DISPUTE_OPENED:
+      return PaymentEventType.DISPUTE_OPENED;
+    case NormalizedEventType.DISPUTE_CLOSED:
+      return PaymentEventType.DISPUTE_CLOSED;
+    default:
+      return null;
+  }
+}
+
+/**
+ * HTTP controller for payment provider webhook callbacks.
  *
  * Design constraints:
  * - All handlers use SystemActor — webhooks are system-to-system
- * - Rental lookup is by externalPaymentIntentId (the Stripe object ID)
+ * - Rental lookup is by externalPaymentIntentId
  * - Unknown event types are acknowledged, not rejected
  * - All domain guards remain active — the webhook cannot bypass FSM or auth
  * - No fund custody: we instruct the external provider, never hold principal
  *
  * Hardening layers (defense-in-depth):
- * 1. Event ID dedup — rejects already-processed events at the gate
- * 2. WebhookEventValidator — pre-dispatch sequence/state validation
- *    Distinguishes duplicate delivery from out-of-order from regression
- * 3. Entity FSM — Rental.transitionTo() enforces VALID_TRANSITIONS
- * 4. MarketplacePaymentService — auth + terminal + regulatory guards
- * 5. Optimistic concurrency — repository save rejects stale writes
- *
- * Known gap: Stripe signature verification (webhook secret + stripe-signature
- * header) is not implemented. In production this MUST be added before
- * this endpoint is exposed to the internet.
+ * 1. Signature verification — rejects unverified payloads at the gate
+ * 2. Event ID dedup — rejects already-processed events (persistent store)
+ * 3. WebhookEventValidator — pre-dispatch sequence/state validation
+ * 4. Entity FSM — Rental.transitionTo() enforces VALID_TRANSITIONS
+ * 5. MarketplacePaymentService — auth + terminal + regulatory guards
+ * 6. Optimistic concurrency — repository save rejects stale writes
  */
 export class WebhookController {
   private readonly paymentService: MarketplacePaymentService;
   private readonly rentalRepo: RentalRepository;
-
-  /**
-   * Tracks Stripe event IDs that have been successfully processed,
-   * along with the rental ID they affected.
-   *
-   * Keyed by Stripe event ID → { rentalId, eventType, processedAt }.
-   *
-   * In production, this would be backed by a persistent store (e.g.,
-   * a processed_events table with a unique constraint on event_id).
-   * The in-memory Map is sufficient for the current reconstruction stage.
-   */
-  private readonly processedEvents = new Map<
-    string,
-    { rentalId: string; eventType: string; processedAt: Date }
-  >();
-
   private readonly auditLog: AuditLog;
+  private readonly processedEvents: ProcessedWebhookEventStore;
+  private readonly verifyWebhook: WebhookVerifier;
 
   constructor(deps: {
     paymentService: MarketplacePaymentService;
     rentalRepo: RentalRepository;
     auditLog: AuditLog;
+    processedEvents: ProcessedWebhookEventStore;
+    verifyWebhook: WebhookVerifier;
   }) {
     this.paymentService = deps.paymentService;
     this.rentalRepo = deps.rentalRepo;
     this.auditLog = deps.auditLog;
+    this.processedEvents = deps.processedEvents;
+    this.verifyWebhook = deps.verifyWebhook;
   }
 
   /**
    * POST /webhooks/stripe
    *
-   * Receives Stripe webhook events and delegates to the appropriate
-   * MarketplacePaymentService handler.
-   *
    * Processing pipeline:
-   * 1. Validate event shape (transport boundary)
-   * 2. Event ID dedup (first-line replay filter)
-   * 3. Reject unsupported event types
-   * 4. Resolve rental by external payment ID
-   * 5. Pre-dispatch state validation (sequence + duplicate + regression)
-   * 6. Dispatch to MarketplacePaymentService
-   * 7. Persist rental state
-   * 8. Record event as processed
-   * 9. Audit success
-   *
-   * A retried or malicious webhook cannot put a rental into an
-   * impossible state — every layer rejects invalid transitions
-   * independently.
+   * 1. Verify signature and normalize event
+   * 2. Event ID dedup (persistent)
+   * 3. Resolve rental by external payment intent ID
+   * 4. Pre-dispatch state validation (sequence + duplicate + regression)
+   * 5. Dispatch to MarketplacePaymentService
+   * 6. Persist rental state
+   * 7. Record event as processed
+   * 8. Audit success
    */
   async handleStripeEvent(req: Request, res: Response): Promise<void> {
-    // 1. Validate event shape
-    const validated = validateStripeWebhookBody(req.body);
-    if (!validated.valid) {
-      res.status(400).json({ error: { code: 'VALIDATION_ERROR', details: validated.errors } });
+    // 1. Verify signature and normalize
+    const signature = req.headers['stripe-signature'];
+    if (!signature || typeof signature !== 'string') {
+      res.status(400).json({ error: { code: 'WEBHOOK_SIGNATURE_INVALID', message: 'Missing stripe-signature header' } });
       return;
     }
 
-    const event = validated.value;
+    let result: { event: PaymentProviderEvent; stripeEventId: string } | null;
+    try {
+      result = this.verifyWebhook(req.body, signature);
+    } catch (error) {
+      if (error instanceof DomainError && error.code === 'WEBHOOK_SIGNATURE_INVALID') {
+        res.status(401).json({ error: { code: error.code, message: error.message } });
+        return;
+      }
+      sendError(res, error);
+      return;
+    }
+
+    // Unsupported but valid event — acknowledge without processing
+    if (!result) {
+      res.status(200).json({ received: true, processed: false, reason: 'unsupported_event_type' });
+      return;
+    }
+
+    const { event, stripeEventId } = result;
     const actor: SystemActor = {
       kind: 'system',
       source: `stripe_webhook:${event.type}`,
     };
 
-    // 2. Event ID dedup — already processed this exact event
-    const priorProcessing = this.processedEvents.get(event.id);
-    if (priorProcessing) {
+    // 2. Event ID dedup — persistent check
+    const alreadyProcessed = await this.processedEvents.has(stripeEventId);
+    if (alreadyProcessed) {
       this.auditLog.record({
         actor,
         entityType: 'Rental',
-        entityId: priorProcessing.rentalId,
+        entityId: event.externalPaymentIntentId,
         action: 'webhook_event_id_dedup',
         outcome: 'blocked',
-        errorCode: 'DUPLICATE_REQUEST',
-        errorMessage: `Event ${event.id} already processed for rental ${priorProcessing.rentalId} at ${priorProcessing.processedAt.toISOString()}`,
-        externalRef: event.id,
+        errorCode: 'DUPLICATE_PAYMENT_EVENT',
+        errorMessage: `Event ${stripeEventId} already processed`,
+        externalRef: stripeEventId,
       });
       res.status(200).json({ received: true, processed: false, reason: 'already_processed' });
       return;
     }
 
-    // 3. Check if event type is supported
-    if (!WebhookEventValidator.isSupportedEventType(event.type)) {
-      this.auditLog.record({
-        actor,
-        entityType: 'StripeEvent',
-        entityId: event.id,
-        action: 'webhook_unsupported_event_type',
-        outcome: 'blocked',
-        errorMessage: `Unsupported event type: ${event.type}`,
-        externalRef: event.id,
-      });
-      res.status(200).json({ received: true, processed: false, reason: 'unsupported_event_type' });
-      return;
-    }
-
-    const eventType = event.type as PaymentEventType;
-    const stripeObjectId = event.data.object.id;
-
-    // 4. Look up the rental by the Stripe object ID
-    const rental = await this.rentalRepo.findByExternalPaymentIntentId(stripeObjectId);
+    // 3. Look up rental by payment intent ID
+    const rental = await this.rentalRepo.findByExternalPaymentIntentId(
+      event.externalPaymentIntentId,
+    );
 
     if (!rental) {
       this.auditLog.record({
         actor,
         entityType: 'StripeEvent',
-        entityId: event.id,
+        entityId: stripeEventId,
         action: 'webhook_rental_not_found',
         outcome: 'blocked',
-        errorMessage: `No rental found for external payment ID: ${stripeObjectId}`,
-        externalRef: stripeObjectId,
+        errorMessage: `No rental found for payment intent: ${event.externalPaymentIntentId}`,
+        externalRef: event.externalPaymentIntentId,
       });
       res.status(200).json({ received: true, processed: false, reason: 'rental_not_found' });
       return;
     }
 
-    // 5. Pre-dispatch state validation
+    // 4. Map to domain event type and validate
+    const paymentEventType = toPaymentEventType(event.type);
+    if (!paymentEventType) {
+      res.status(200).json({ received: true, processed: false, reason: 'unmapped_event_type' });
+      return;
+    }
+
     const beforeStatus = rental.escrowStatus;
     const validation = WebhookEventValidator.validate(
-      eventType,
+      paymentEventType,
       rental.escrowStatus,
       rental.disputeOpen,
     );
@@ -168,16 +210,11 @@ export class WebhookController {
         action: 'webhook_duplicate_delivery',
         outcome: 'blocked',
         beforeState: rental.escrowStatus,
-        errorCode: 'DUPLICATE_REQUEST',
+        errorCode: 'DUPLICATE_PAYMENT_EVENT',
         errorMessage: validation.reason,
-        externalRef: event.id,
+        externalRef: stripeEventId,
       });
-      // Mark as processed to prevent future retries from hitting validation again
-      this.processedEvents.set(event.id, {
-        rentalId: rental.id,
-        eventType: event.type,
-        processedAt: new Date(),
-      });
+      await this.processedEvents.add(stripeEventId, rental.id, event.type);
       res.status(200).json({ received: true, processed: false, reason: 'duplicate_event' });
       return;
     }
@@ -192,26 +229,18 @@ export class WebhookController {
         beforeState: rental.escrowStatus,
         errorCode: validation.code,
         errorMessage: validation.reason,
-        externalRef: event.id,
+        externalRef: stripeEventId,
       });
-      // Do NOT ack with 200 — this is a genuinely invalid event that
-      // should not be silently swallowed. Return 409 Conflict so that
-      // operational monitoring can detect sequence anomalies.
       res.status(409).json({
-        error: {
-          code: validation.code,
-          message: validation.reason,
-        },
+        error: { code: validation.code, message: validation.reason },
       });
       return;
     }
 
-    // 6. Dispatch to MarketplacePaymentService
+    // 5. Dispatch to MarketplacePaymentService
     try {
-      await this.dispatchEvent(actor, eventType, rental);
+      await this.dispatchEvent(actor, paymentEventType, rental);
     } catch (error) {
-      // Domain layer rejected the transition despite pre-validation passing.
-      // This is a defense-in-depth catch — the entity FSM is the ultimate authority.
       if (error instanceof DomainError) {
         this.auditLog.record({
           actor,
@@ -222,19 +251,17 @@ export class WebhookController {
           beforeState: beforeStatus,
           errorCode: error.code,
           errorMessage: error.message,
-          externalRef: event.id,
+          externalRef: stripeEventId,
         });
       }
       sendError(res, error);
       return;
     }
 
-    // 7. Persist updated rental state
+    // 6. Persist updated rental state
     try {
       await this.rentalRepo.save(rental);
     } catch (error) {
-      // Version conflict = concurrent write. Do NOT mark as processed —
-      // the event should be retried.
       if (error instanceof DomainError && error.code === 'VERSION_CONFLICT') {
         this.auditLog.record({
           actor,
@@ -246,7 +273,7 @@ export class WebhookController {
           afterState: rental.escrowStatus,
           errorCode: error.code,
           errorMessage: error.message,
-          externalRef: event.id,
+          externalRef: stripeEventId,
         });
         res.status(409).json({
           error: { code: 'VERSION_CONFLICT', message: 'Concurrent modification detected; retry the event' },
@@ -256,14 +283,10 @@ export class WebhookController {
       throw error;
     }
 
-    // 8. Record event as processed (after successful save)
-    this.processedEvents.set(event.id, {
-      rentalId: rental.id,
-      eventType: event.type,
-      processedAt: new Date(),
-    });
+    // 7. Record event as processed (after successful save)
+    await this.processedEvents.add(stripeEventId, rental.id, event.type);
 
-    // 9. Audit: webhook successfully processed
+    // 8. Audit: webhook successfully processed
     this.auditLog.record({
       actor,
       entityType: 'Rental',
@@ -272,7 +295,7 @@ export class WebhookController {
       outcome: 'success',
       beforeState: beforeStatus,
       afterState: rental.escrowStatus,
-      externalRef: event.id,
+      externalRef: stripeEventId,
     });
 
     res.status(200).json({ received: true, processed: true });
@@ -280,10 +303,7 @@ export class WebhookController {
 
   /**
    * Dispatch a validated event to the appropriate MarketplacePaymentService handler.
-   *
-   * Uses the PaymentEventType enum — never raw strings. The switch is exhaustive
-   * for all supported event types with a default guard that throws for unknown types
-   * (which should be unreachable due to WebhookEventValidator.isSupportedEventType).
+   * All webhook-driven handlers are PASSIVE — no provider API calls.
    */
   private async dispatchEvent(
     actor: SystemActor,
@@ -307,8 +327,6 @@ export class WebhookController {
         await this.paymentService.handleDisputeResolved(actor, rental);
         break;
       default: {
-        // Exhaustive check — if this fires, a new PaymentEventType was
-        // added without updating this switch.
         const _exhaustive: never = eventType;
         throw new DomainError(
           `Unhandled payment event type: ${_exhaustive}`,

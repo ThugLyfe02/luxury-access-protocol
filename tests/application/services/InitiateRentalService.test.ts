@@ -24,8 +24,9 @@ const ONE_YEAR_LATER = new Date('2026-06-01T00:00:00Z');
 
 function makePaymentProvider(): PaymentProvider {
   return {
-    createCheckoutSession: vi.fn().mockResolvedValue({ sessionId: 'cs_test_123' }),
-    authorizePayment: vi.fn().mockResolvedValue({ authorized: true }),
+    createConnectedAccount: vi.fn().mockResolvedValue({ connectedAccountId: 'acct_test' }),
+    createOnboardingLink: vi.fn().mockResolvedValue({ url: 'https://connect.stripe.com/test' }),
+    createCheckoutSession: vi.fn().mockResolvedValue({ sessionId: 'cs_test_123', paymentIntentId: 'pi_test_123' }),
     capturePayment: vi.fn().mockResolvedValue({ captured: true }),
     refundPayment: vi.fn().mockResolvedValue({ refunded: true }),
     transferToConnectedAccount: vi.fn().mockResolvedValue({ transferId: 'tr_test' }),
@@ -106,7 +107,7 @@ describe('InitiateRentalService', () => {
       const result = await service.execute(makeActor(), defaultInput());
 
       expect(result.rental.escrowStatus).toBe(EscrowStatus.AWAITING_EXTERNAL_PAYMENT);
-      expect(result.rental.externalPaymentIntentId).toBe('cs_test_123');
+      expect(result.rental.externalPaymentIntentId).toBe('pi_test_123');
       expect(result.rental.renterId).toBe('renter-1');
       expect(result.rental.watchId).toBe('watch-1');
       expect(result.blocked).toBe(false);

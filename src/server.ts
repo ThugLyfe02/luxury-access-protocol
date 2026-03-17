@@ -2,6 +2,8 @@ import express from 'express';
 import { InitiateRentalService } from './application/services/InitiateRentalService';
 import { MarketplacePaymentService } from './application/services/MarketplacePaymentService';
 import { StripePaymentProvider } from './infrastructure/payments/StripePaymentProvider';
+import { StripeWebhookHandler } from './infrastructure/payments/StripeWebhookHandler';
+import { loadStripeConfig } from './infrastructure/payments/stripeConfig';
 import { InMemoryUserRepository } from './infrastructure/repositories/InMemoryUserRepository';
 import { InMemoryWatchRepository } from './infrastructure/repositories/InMemoryWatchRepository';
 import { InMemoryRentalRepository } from './infrastructure/repositories/InMemoryRentalRepository';
@@ -21,7 +23,12 @@ import { AdminExposureQueryService } from './application/services/AdminExposureQ
 import { AuditLog } from './application/audit/AuditLog';
 import { InMemoryAuditSink } from './infrastructure/audit/InMemoryAuditSink';
 import { RentalController } from './http/rentalController';
-import { WebhookController } from './http/webhookController';
+import {
+  WebhookController,
+  InMemoryProcessedWebhookEventStore,
+  WebhookVerifier,
+} from './http/webhookController';
+import { PaymentProvider } from './domain/interfaces/PaymentProvider';
 import { UserRepository } from './domain/interfaces/UserRepository';
 import { WatchRepository } from './domain/interfaces/WatchRepository';
 import { RentalRepository } from './domain/interfaces/RentalRepository';
@@ -38,15 +45,16 @@ import { closePool } from './infrastructure/db/connection';
  * the schema auto-migrated on startup. Otherwise falls back to in-memory
  * repositories for local development and testing.
  *
+ * When STRIPE_SECRET_KEY is set, real Stripe integration is used.
+ * Otherwise a stub provider is used for testing.
+ *
  * Known gaps:
- * - StripePaymentProvider is a stub (throws "Not implemented")
  * - No real auth middleware (actor derived from request body)
- * - No Stripe signature verification on webhooks
- * - Structured audit log (in-memory sink)
  * - No CORS / rate limiting / helmet
  */
 
 const usePostgres = Boolean(process.env.DATABASE_URL);
+const useStripe = Boolean(process.env.STRIPE_SECRET_KEY);
 
 // --- Infrastructure: Repositories ---
 let userRepo: UserRepository;
@@ -63,14 +71,38 @@ if (usePostgres) {
   rentalRepo = new InMemoryRentalRepository();
 }
 
-// These repositories do not yet have Postgres implementations.
-// They remain in-memory regardless of DATABASE_URL.
 const kycRepo = new InMemoryKycRepository();
 const insuranceRepo = new InMemoryInsuranceRepository();
 const reviewRepo = new InMemoryReviewRepository();
 const claimRepo = new InMemoryClaimRepository();
 
-const paymentProvider = new StripePaymentProvider();
+// --- Infrastructure: Payment Provider ---
+let paymentProvider: PaymentProvider;
+let webhookVerifier: WebhookVerifier;
+
+if (useStripe) {
+  const stripeConfig = loadStripeConfig();
+  const stripeProvider = new StripePaymentProvider(stripeConfig);
+  paymentProvider = stripeProvider;
+
+  const webhookHandler = new StripeWebhookHandler(
+    stripeProvider.getStripeInstance(),
+    stripeConfig.webhookSecret,
+  );
+  webhookVerifier = (rawBody, signature) => webhookHandler.processWebhook(rawBody, signature);
+} else {
+  // Stub provider for testing without Stripe credentials.
+  // All methods throw "Not implemented" — tests use mocks instead.
+  paymentProvider = {
+    createConnectedAccount: async () => { throw new Error('Stripe not configured'); },
+    createOnboardingLink: async () => { throw new Error('Stripe not configured'); },
+    createCheckoutSession: async () => { throw new Error('Stripe not configured'); },
+    capturePayment: async () => { throw new Error('Stripe not configured'); },
+    refundPayment: async () => { throw new Error('Stripe not configured'); },
+    transferToConnectedAccount: async () => { throw new Error('Stripe not configured'); },
+  };
+  webhookVerifier = () => { throw new Error('Stripe not configured'); };
+}
 
 // --- Configuration ---
 const exposureConfig: ExposureConfig = {
@@ -83,6 +115,9 @@ const exposureConfig: ExposureConfig = {
 // --- Audit ---
 const auditSink = new InMemoryAuditSink();
 const auditLog = new AuditLog(auditSink);
+
+// --- Webhook Event Dedup ---
+const processedEvents = new InMemoryProcessedWebhookEventStore();
 
 // --- Application Services ---
 const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog);
@@ -125,12 +160,16 @@ const webhookController = new WebhookController({
   paymentService: marketplacePaymentService,
   rentalRepo,
   auditLog,
+  processedEvents,
+  verifyWebhook: webhookVerifier,
 });
 
 // --- Express App ---
 const app = express();
 
-app.use('/webhooks', express.json());
+// Stripe webhooks need the raw body for signature verification.
+// Use express.raw() for the webhook path and express.json() for everything else.
+app.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
 // --- Routes ---
@@ -138,7 +177,11 @@ app.post('/rentals', (req, res) => rentalController.initiateRental(req, res));
 app.post('/webhooks/stripe', (req, res) => webhookController.handleStripeEvent(req, res));
 
 app.get('/health', (_req, res) => {
-  res.status(200).json({ status: 'ok', persistence: usePostgres ? 'postgres' : 'memory' });
+  res.status(200).json({
+    status: 'ok',
+    persistence: usePostgres ? 'postgres' : 'memory',
+    stripe: useStripe ? 'live' : 'stub',
+  });
 });
 
 // --- Start ---
@@ -155,7 +198,10 @@ async function start(): Promise<void> {
 
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
-    console.log(`luxury-access-protocol listening on port ${PORT} (persistence: ${usePostgres ? 'postgres' : 'memory'})`);
+    console.log(
+      `luxury-access-protocol listening on port ${PORT} ` +
+      `(persistence: ${usePostgres ? 'postgres' : 'memory'}, stripe: ${useStripe ? 'live' : 'stub'})`,
+    );
   });
 }
 

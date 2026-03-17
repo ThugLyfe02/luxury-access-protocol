@@ -204,13 +204,20 @@ export class InitiateRentalService {
         : null;
 
       // 13. External checkout session via payment provider
-      const { sessionId } = await this.paymentProvider.createCheckoutSession(
-        rental.id,
-        rentalPrice,
-      );
+      const { paymentIntentId, sessionId } = await this.paymentProvider.createCheckoutSession({
+        rentalId: rental.id,
+        renterId: renter.id,
+        watchId: watch.id,
+        ownerId: watch.ownerId,
+        amount: rentalPrice,
+        currency: 'usd',
+      });
 
       // 14. Transition to awaiting external payment
-      rental.startExternalPayment(sessionId);
+      // The payment intent ID is the primary external reference used for
+      // captures, refunds, and webhook correlation. The session ID is
+      // the customer-facing checkout redirect target.
+      rental.startExternalPayment(paymentIntentId);
 
       // 15. Record idempotency key after successful creation
       if (input.idempotencyKey) {

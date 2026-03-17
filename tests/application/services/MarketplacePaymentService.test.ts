@@ -19,8 +19,9 @@ const NOW = new Date('2025-06-01T00:00:00Z');
 
 function makePaymentProvider(): PaymentProvider {
   return {
-    createCheckoutSession: vi.fn().mockResolvedValue({ sessionId: 'cs_test' }),
-    authorizePayment: vi.fn().mockResolvedValue({ authorized: true }),
+    createConnectedAccount: vi.fn().mockResolvedValue({ connectedAccountId: 'acct_test' }),
+    createOnboardingLink: vi.fn().mockResolvedValue({ url: 'https://connect.stripe.com/test' }),
+    createCheckoutSession: vi.fn().mockResolvedValue({ sessionId: 'cs_test', paymentIntentId: 'pi_test' }),
     capturePayment: vi.fn().mockResolvedValue({ captured: true }),
     refundPayment: vi.fn().mockResolvedValue({ refunded: true }),
     transferToConnectedAccount: vi.fn().mockResolvedValue({ transferId: 'tr_test_123' }),
@@ -90,11 +91,23 @@ describe('MarketplacePaymentService', () => {
   });
 
   describe('handlePaymentCaptured', () => {
-    it('calls capturePayment on provider and transitions', async () => {
+    it('transitions to CAPTURED (passive acknowledgment, no provider call)', async () => {
       const provider = makePaymentProvider();
       const service = new MarketplacePaymentService(provider, makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_AUTHORIZED);
       await service.handlePaymentCaptured(systemActor, rental);
+      expect(rental.escrowStatus).toBe(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
+      // Passive handler does NOT call provider — the capture already happened externally
+      expect(provider.capturePayment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('requestCapture', () => {
+    it('calls capturePayment on provider and transitions', async () => {
+      const provider = makePaymentProvider();
+      const service = new MarketplacePaymentService(provider, makeAuditLog());
+      const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_AUTHORIZED);
+      await service.requestCapture(systemActor, rental);
       expect(rental.escrowStatus).toBe(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
       expect(provider.capturePayment).toHaveBeenCalledWith('pi_test_intent');
     });
@@ -104,18 +117,31 @@ describe('MarketplacePaymentService', () => {
       (provider.capturePayment as ReturnType<typeof vi.fn>).mockResolvedValue({ captured: false });
       const service = new MarketplacePaymentService(provider, makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_AUTHORIZED);
-      await expect(service.handlePaymentCaptured(systemActor, rental)).rejects.toThrow(DomainError);
+      await expect(service.requestCapture(systemActor, rental)).rejects.toThrow(DomainError);
     });
   });
 
   describe('handlePaymentRefunded', () => {
-    it('calls refundPayment and transitions to REFUNDED', async () => {
+    it('transitions to REFUNDED (passive acknowledgment, no provider call)', async () => {
       const provider = makePaymentProvider();
       const service = new MarketplacePaymentService(provider, makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
       await service.handlePaymentRefunded(systemActor, rental);
       expect(rental.escrowStatus).toBe(EscrowStatus.REFUNDED);
       expect(rental.isTerminal()).toBe(true);
+      expect(provider.refundPayment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('requestRefund', () => {
+    it('calls refundPayment on provider and transitions to REFUNDED', async () => {
+      const provider = makePaymentProvider();
+      const service = new MarketplacePaymentService(provider, makeAuditLog());
+      const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
+      await service.requestRefund(systemActor, rental);
+      expect(rental.escrowStatus).toBe(EscrowStatus.REFUNDED);
+      expect(rental.isTerminal()).toBe(true);
+      expect(provider.refundPayment).toHaveBeenCalledWith('pi_test_intent');
     });
   });
 

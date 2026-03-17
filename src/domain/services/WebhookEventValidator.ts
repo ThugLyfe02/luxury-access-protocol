@@ -1,19 +1,23 @@
-import { DomainError } from '../errors/DomainError';
 import { EscrowStatus } from '../enums/EscrowStatus';
 
 /**
- * Canonical payment-provider webhook event types.
+ * Canonical payment-provider event types as understood by the domain.
  *
- * These are the ONLY event types the system processes.
- * Maps to Stripe event naming; the actual Stripe event type
- * string is the value.
+ * These are provider-AGNOSTIC names. The mapping from real Stripe event
+ * types to these canonical types happens in the infrastructure layer
+ * (StripeWebhookHandler → NormalizedEventType → dispatched as these).
  */
 export enum PaymentEventType {
-  PAYMENT_AUTHORIZED = 'payment_intent.authorized',
-  PAYMENT_CAPTURED = 'payment_intent.captured',
-  CHARGE_REFUNDED = 'charge.refunded',
-  DISPUTE_OPENED = 'charge.dispute.created',
-  DISPUTE_CLOSED = 'charge.dispute.closed',
+  /** Auth hold placed — renter completed checkout */
+  PAYMENT_AUTHORIZED = 'payment_authorized',
+  /** Payment captured — funds secured */
+  PAYMENT_CAPTURED = 'payment_captured',
+  /** Refund processed */
+  CHARGE_REFUNDED = 'charge_refunded',
+  /** Dispute opened — blocks release */
+  DISPUTE_OPENED = 'dispute_opened',
+  /** Dispute closed — clears dispute lock */
+  DISPUTE_CLOSED = 'dispute_closed',
 }
 
 const ALL_PAYMENT_EVENT_TYPES: ReadonlySet<string> = new Set(

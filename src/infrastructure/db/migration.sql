@@ -97,3 +97,42 @@ CREATE INDEX IF NOT EXISTS idx_rentals_external_payment_intent_id
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rentals_one_active_per_watch
   ON rentals(watch_id)
   WHERE escrow_status NOT IN ('FUNDS_RELEASED_TO_OWNER', 'REFUNDED');
+
+-- ============================================================
+-- OWNER CONNECTED ACCOUNTS (Stripe Connect)
+-- ============================================================
+-- Stores the external payment provider's connected account ID
+-- for watch owners. Decoupled from the User domain entity to
+-- keep payment-provider concerns out of the domain layer.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS owner_connected_accounts (
+  user_id               UUID PRIMARY KEY REFERENCES users(id),
+  connected_account_id  TEXT        NOT NULL,
+  onboarding_complete   BOOLEAN     NOT NULL DEFAULT FALSE,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_owner_connected_accounts_account_id
+  ON owner_connected_accounts(connected_account_id);
+
+-- ============================================================
+-- PROCESSED WEBHOOK EVENTS (Idempotency)
+-- ============================================================
+-- Tracks external webhook event IDs that have been successfully
+-- processed. Prevents duplicate event processing across restarts.
+-- The unique constraint on external_event_id ensures at-most-once
+-- semantics even under concurrent delivery.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS processed_webhook_events (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  external_event_id TEXT        NOT NULL UNIQUE,
+  rental_id         TEXT        NOT NULL,
+  event_type        TEXT        NOT NULL,
+  processed_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_processed_webhook_events_processed_at
+  ON processed_webhook_events(processed_at);
