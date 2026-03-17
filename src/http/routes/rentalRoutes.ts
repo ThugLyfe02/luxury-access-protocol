@@ -19,6 +19,7 @@ import {
   IdempotencyStore,
   computePayloadHash,
 } from '../idempotency/IdempotencyStore';
+import { AuthenticatedActor } from '../../auth/types/AuthenticatedActor';
 
 export interface RentalRouteDeps {
   initiateRentalService: InitiateRentalService;
@@ -39,16 +40,15 @@ export function createRentalRoutes(deps: RentalRouteDeps): Router {
   /**
    * POST /rentals/initiate
    *
-   * Initiates a new rental. Validates input, loads entities, delegates
-   * to InitiateRentalService. Supports idempotency via Idempotency-Key header.
-   *
-   * NOTE: Actor is derived from renterId in the request body.
-   * In production, actor would come from authenticated token middleware.
-   * This is explicitly marked as a structural placeholder.
+   * Initiates a new rental.
+   * Actor identity (renterId) comes from the verified JWT token — NOT the body.
+   * Request body provides only resource/action inputs: watchId, rentalPrice, city, zipCode.
    */
   router.post('/rentals/initiate', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      // 1. Validate input
+      const actor = req.actor as AuthenticatedActor;
+
+      // 1. Validate input (no renterId in body)
       const validated = validateInitiateRental(req.body);
       if (!validated.valid) {
         res.status(400).json(errorResponse(
@@ -60,7 +60,10 @@ export function createRentalRoutes(deps: RentalRouteDeps): Router {
         return;
       }
 
-      const { renterId, watchId, rentalPrice, city, zipCode, idempotencyKey } = validated.value;
+      const { watchId, rentalPrice, city, zipCode, idempotencyKey } = validated.value;
+
+      // renterId is derived from authenticated actor — never from body
+      const renterId = actor.userId;
 
       // 2. Idempotency check
       const effectiveIdempotencyKey = (req.headers['idempotency-key'] as string | undefined)
@@ -143,15 +146,15 @@ export function createRentalRoutes(deps: RentalRouteDeps): Router {
       const watchOpenClaims = await deps.claimRepo.findOpenByWatchId(watchId);
       const watchActiveRentals = await deps.rentalRepo.findByWatchId(watchId);
 
-      // 9. Build actor (placeholder — real auth would extract from token)
-      const actor: UserActor = {
+      // 9. Build domain actor from verified auth context
+      const domainActor: UserActor = {
         kind: 'user',
         userId: renterId,
-        role: renter.role as MarketplaceRole,
+        role: actor.role,
       };
 
       // 10. Execute
-      const result = await deps.initiateRentalService.execute(actor, {
+      const result = await deps.initiateRentalService.execute(domainActor, {
         idempotencyKey: effectiveIdempotencyKey,
         renter,
         watch,
@@ -211,10 +214,14 @@ export function createRentalRoutes(deps: RentalRouteDeps): Router {
 
   /**
    * GET /rentals/:id
+   *
    * Returns a rental by ID.
+   * Authorization: actor must be the renter, the watch owner, or an admin.
    */
   router.get('/rentals/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const actor = req.actor as AuthenticatedActor;
+
       const validated = validateRentalIdParam(req.params as Record<string, string>);
       if (!validated.valid) {
         res.status(400).json(errorResponse(
@@ -230,6 +237,24 @@ export function createRentalRoutes(deps: RentalRouteDeps): Router {
       if (!rental) {
         res.status(404).json(errorResponse('NOT_FOUND', 'Rental not found', req.requestId));
         return;
+      }
+
+      // Authorization: renter, watch owner, or admin
+      if (actor.role !== MarketplaceRole.ADMIN) {
+        const isRenter = actor.userId === rental.renterId;
+        if (!isRenter) {
+          // Check if actor is the watch owner
+          const watch = await deps.watchRepo.findById(rental.watchId);
+          const isOwner = watch !== null && actor.userId === watch.ownerId;
+          if (!isOwner) {
+            res.status(403).json(errorResponse(
+              'FORBIDDEN',
+              'You do not have access to this rental',
+              req.requestId,
+            ));
+            return;
+          }
+        }
       }
 
       res.status(200).json(successResponse({ rental: presentRental(rental) }, req.requestId));

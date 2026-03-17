@@ -41,8 +41,12 @@ function isPositiveFiniteNumber(value: unknown): value is number {
 // POST /rentals/initiate
 // ---------------------------------------------------------------------------
 
+/**
+ * Rental initiation DTO.
+ * renterId is NOT accepted from the body — it is derived from the
+ * authenticated actor's verified token. This prevents impersonation.
+ */
 export interface InitiateRentalDTO {
-  readonly renterId: string;
   readonly watchId: string;
   readonly rentalPrice: number;
   readonly city: string;
@@ -58,10 +62,6 @@ export function validateInitiateRental(body: unknown): Validated<InitiateRentalD
   }
 
   const obj = body as Record<string, unknown>;
-
-  if (!isUUID(obj.renterId)) {
-    errors.push({ field: 'renterId', message: 'renterId must be a valid UUID' });
-  }
 
   if (!isUUID(obj.watchId)) {
     errors.push({ field: 'watchId', message: 'watchId must be a valid UUID' });
@@ -90,7 +90,6 @@ export function validateInitiateRental(body: unknown): Validated<InitiateRentalD
   return {
     valid: true,
     value: {
-      renterId: (obj.renterId as string).trim(),
       watchId: (obj.watchId as string).trim(),
       rentalPrice: obj.rentalPrice as number,
       city: (obj.city as string).trim(),

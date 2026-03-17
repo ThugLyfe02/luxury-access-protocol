@@ -7,24 +7,34 @@ import { createRentalRoutes, RentalRouteDeps } from './routes/rentalRoutes';
 import { createOwnerRoutes, OwnerRouteDeps } from './routes/ownerRoutes';
 import { createWebhookRoutes } from './routes/webhookRoutes';
 import { WebhookController } from './webhookController';
+import { JwtTokenService } from '../auth/JwtTokenService';
+import { requireAuth } from '../auth/middleware/requireAuth';
 
 export interface AppDeps {
   health: HealthDeps;
   rental: RentalRouteDeps;
   owner: OwnerRouteDeps;
   webhookController: WebhookController;
+  tokenService: JwtTokenService;
 }
 
 /**
  * Creates and configures the Express application.
+ *
+ * Route security classification:
+ * 1. PUBLIC: GET /health, GET /ready — no auth
+ * 2. WEBHOOK-SIGNED: POST /webhooks/stripe — Stripe signature, no bearer auth
+ * 3. AUTHENTICATED: rental and owner routes — requireAuth middleware
+ * 4. INTERNAL: (none currently exposed) — would use requireInternalAccess
  *
  * Middleware order:
  * 1. Request ID assignment
  * 2. Raw body parsing for webhook route only
  * 3. JSON body parsing for all other routes
  * 4. Request logging
- * 5. Route handlers
- * 6. Central error handler (must be last)
+ * 5. Route-specific auth middleware
+ * 6. Route handlers
+ * 7. Central error handler (must be last)
  */
 export function createApp(deps: AppDeps): Express {
   const app = express();
@@ -33,7 +43,6 @@ export function createApp(deps: AppDeps): Express {
   app.use(requestIdMiddleware);
 
   // 2. Stripe webhook raw body — BEFORE json parser
-  //    Must be on the exact path to avoid interfering with other routes
   app.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
 
   // 3. JSON parsing for all other routes
@@ -42,13 +51,20 @@ export function createApp(deps: AppDeps): Express {
   // 4. Request logging
   app.use(requestLoggerMiddleware);
 
-  // 5. Routes
+  // 5. PUBLIC routes — no auth required
   app.use(createHealthRoutes(deps.health));
-  app.use(createRentalRoutes(deps.rental));
-  app.use(createOwnerRoutes(deps.owner));
+
+  // 6. WEBHOOK-SIGNED routes — Stripe signature verification, no bearer auth
   app.use(createWebhookRoutes(deps.webhookController));
 
-  // 6. Central error handler — must be registered last
+  // 7. AUTHENTICATED routes — bearer JWT required
+  const authMiddleware = requireAuth(deps.tokenService);
+  app.use('/rentals', authMiddleware);
+  app.use('/owners', authMiddleware);
+  app.use(createRentalRoutes(deps.rental));
+  app.use(createOwnerRoutes(deps.owner));
+
+  // 8. Central error handler — must be registered last
   app.use(centralErrorHandler);
 
   return app;

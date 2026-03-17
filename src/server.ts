@@ -30,6 +30,8 @@ import { WatchRepository } from './domain/interfaces/WatchRepository';
 import { RentalRepository } from './domain/interfaces/RentalRepository';
 import { runMigration } from './infrastructure/db/migrate';
 import { closePool } from './infrastructure/db/connection';
+import { JwtTokenService } from './auth/JwtTokenService';
+import { loadAuthConfig } from './auth/AuthConfig';
 
 /**
  * Composition root.
@@ -40,15 +42,18 @@ import { closePool } from './infrastructure/db/connection';
  * Modes:
  *   DATABASE_URL set → Postgres repositories + auto-migration
  *   STRIPE_SECRET_KEY set → real Stripe integration
- *   Otherwise → in-memory repositories + stub payment provider
+ *   JWT_SECRET + INTERNAL_API_TOKEN → auth enforcement
  *
- * Known gaps:
- * - No real auth middleware (actor derived from request body)
- * - No CORS / rate limiting / helmet
+ * Auth is always required for user-facing routes.
+ * No silent fallback to anonymous access.
  */
 
 const usePostgres = Boolean(process.env.DATABASE_URL);
 const useStripe = Boolean(process.env.STRIPE_SECRET_KEY);
+
+// --- Auth ---
+const authConfig = loadAuthConfig();
+const tokenService = new JwtTokenService(authConfig);
 
 // --- Infrastructure: Repositories ---
 let userRepo: UserRepository;
@@ -150,6 +155,7 @@ const app = createApp({
     connectedAccountStore,
   },
   webhookController,
+  tokenService,
 });
 
 // --- Start ---

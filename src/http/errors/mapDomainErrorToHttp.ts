@@ -33,6 +33,7 @@ const CODE_TO_STATUS: ReadonlyMap<DomainErrorCode, number> = new Map([
   ['RISK_POLICY_VIOLATION', 403],
   ['TIER_ACCESS_DENIED', 403],
   ['CITY_NOT_ACTIVE', 403],
+  ['FORBIDDEN', 403],
 
   // 409
   ['INVALID_STATE_TRANSITION', 409],

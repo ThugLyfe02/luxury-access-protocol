@@ -16,6 +16,7 @@ import { InMemoryConnectedAccountStore } from '../../src/http/routes/ownerRoutes
 import { AuditLog } from '../../src/application/audit/AuditLog';
 import { InMemoryAuditSink } from '../../src/infrastructure/audit/InMemoryAuditSink';
 import { PaymentProvider } from '../../src/domain/interfaces/PaymentProvider';
+import { testTokenService } from './testAuthHelper';
 
 function makePaymentProvider(): PaymentProvider {
   return {
@@ -64,6 +65,7 @@ function buildApp(health: { persistence: 'postgres' | 'memory'; stripe: 'live' |
       processedEvents: new InMemoryProcessedWebhookEventStore(),
       verifyWebhook: () => { throw new Error('not configured'); },
     }),
+    tokenService: testTokenService,
   };
 
   return createApp(deps);

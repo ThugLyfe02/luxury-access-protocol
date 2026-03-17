@@ -1,11 +1,13 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PaymentProvider } from '../../domain/interfaces/PaymentProvider';
 import { UserRepository } from '../../domain/interfaces/UserRepository';
+import { MarketplaceRole } from '../../domain/enums/MarketplaceRole';
 import {
   validateCreateConnectedAccount,
   validateCreateOnboardingLink,
 } from '../dto/validate';
 import { successResponse, errorResponse } from '../dto/response';
+import { AuthenticatedActor } from '../../auth/types/AuthenticatedActor';
 
 /**
  * Connected account store interface.
@@ -41,10 +43,13 @@ export function createOwnerRoutes(deps: OwnerRouteDeps): Router {
    * POST /owners/:ownerId/connected-account
    *
    * Creates a connected account for a watch owner.
+   * Authorization: actor must be the same owner or an admin.
    * Idempotent: returns existing account if one already exists.
    */
   router.post('/owners/:ownerId/connected-account', async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const actor = req.actor as AuthenticatedActor;
+
       const validated = validateCreateConnectedAccount(
         req.params as Record<string, string>,
         req.body,
@@ -60,6 +65,16 @@ export function createOwnerRoutes(deps: OwnerRouteDeps): Router {
       }
 
       const { ownerId, email, country } = validated.value;
+
+      // Authorization: must be self or admin
+      if (actor.role !== MarketplaceRole.ADMIN && actor.userId !== ownerId) {
+        res.status(403).json(errorResponse(
+          'FORBIDDEN',
+          'You can only manage your own connected account',
+          req.requestId,
+        ));
+        return;
+      }
 
       // Verify owner exists
       const owner = await deps.userRepo.findById(ownerId);
@@ -101,10 +116,13 @@ export function createOwnerRoutes(deps: OwnerRouteDeps): Router {
    * POST /owners/:ownerId/onboarding-link
    *
    * Generates a Stripe Connect onboarding link for an owner.
+   * Authorization: actor must be the same owner or an admin.
    * Requires the connected account to already exist.
    */
   router.post('/owners/:ownerId/onboarding-link', async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const actor = req.actor as AuthenticatedActor;
+
       const validated = validateCreateOnboardingLink(
         req.params as Record<string, string>,
         req.body,
@@ -120,6 +138,16 @@ export function createOwnerRoutes(deps: OwnerRouteDeps): Router {
       }
 
       const { ownerId, connectedAccountId, returnUrl, refreshUrl } = validated.value;
+
+      // Authorization: must be self or admin
+      if (actor.role !== MarketplaceRole.ADMIN && actor.userId !== ownerId) {
+        res.status(403).json(errorResponse(
+          'FORBIDDEN',
+          'You can only manage your own connected account',
+          req.requestId,
+        ));
+        return;
+      }
 
       // Verify owner exists
       const owner = await deps.userRepo.findById(ownerId);

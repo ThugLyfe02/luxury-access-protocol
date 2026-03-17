@@ -1,82 +1,15 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import request from 'supertest';
-import { createApp, AppDeps } from '../../src/http/app';
-import { InitiateRentalService } from '../../src/application/services/InitiateRentalService';
-import { MarketplacePaymentService } from '../../src/application/services/MarketplacePaymentService';
-import { InMemoryUserRepository } from '../../src/infrastructure/repositories/InMemoryUserRepository';
-import { InMemoryWatchRepository } from '../../src/infrastructure/repositories/InMemoryWatchRepository';
-import { InMemoryRentalRepository } from '../../src/infrastructure/repositories/InMemoryRentalRepository';
-import { InMemoryKycRepository } from '../../src/infrastructure/repositories/InMemoryKycRepository';
-import { InMemoryInsuranceRepository } from '../../src/infrastructure/repositories/InMemoryInsuranceRepository';
-import { InMemoryReviewRepository } from '../../src/infrastructure/repositories/InMemoryReviewRepository';
-import { InMemoryClaimRepository } from '../../src/infrastructure/repositories/InMemoryClaimRepository';
-import { WebhookController, InMemoryProcessedWebhookEventStore } from '../../src/http/webhookController';
-import { InMemoryIdempotencyStore } from '../../src/http/idempotency/IdempotencyStore';
-import { InMemoryConnectedAccountStore } from '../../src/http/routes/ownerRoutes';
-import { AuditLog } from '../../src/application/audit/AuditLog';
-import { InMemoryAuditSink } from '../../src/infrastructure/audit/InMemoryAuditSink';
-import { PaymentProvider } from '../../src/domain/interfaces/PaymentProvider';
+import { makeTestApp } from './testAppFactory';
+import { signToken } from './testAuthHelper';
 import { User } from '../../src/domain/entities/User';
 import { MarketplaceRole } from '../../src/domain/enums/MarketplaceRole';
-import { Express } from 'express';
 
 const OWNER_ID = '22222222-2222-2222-2222-222222222222';
+const OTHER_USER_ID = '33333333-3333-3333-3333-333333333333';
 const ONE_YEAR_AGO = new Date('2025-03-17T12:00:00Z');
 
-function makePaymentProvider(): PaymentProvider {
-  return {
-    createConnectedAccount: vi.fn().mockResolvedValue({ connectedAccountId: 'acct_owner_123' }),
-    createOnboardingLink: vi.fn().mockResolvedValue({ url: 'https://connect.stripe.com/onboard' }),
-    createCheckoutSession: vi.fn().mockResolvedValue({ sessionId: 'cs_test', paymentIntentId: 'pi_test' }),
-    capturePayment: vi.fn().mockResolvedValue({ captured: true }),
-    refundPayment: vi.fn().mockResolvedValue({ refunded: true }),
-    transferToConnectedAccount: vi.fn().mockResolvedValue({ transferId: 'tr_test' }),
-  };
-}
-
-function makeOwnerApp(): { app: Express; deps: AppDeps } {
-  const pp = makePaymentProvider();
-  const auditLog = new AuditLog(new InMemoryAuditSink());
-  const userRepo = new InMemoryUserRepository();
-  const rentalRepo = new InMemoryRentalRepository();
-
-  const deps: AppDeps = {
-    health: { persistence: 'memory', stripe: 'stub' },
-    rental: {
-      initiateRentalService: new InitiateRentalService(pp, auditLog),
-      userRepo,
-      watchRepo: new InMemoryWatchRepository(),
-      rentalRepo,
-      kycRepo: new InMemoryKycRepository(),
-      insuranceRepo: new InMemoryInsuranceRepository(),
-      claimRepo: new InMemoryClaimRepository(),
-      reviewRepo: new InMemoryReviewRepository(),
-      exposureConfig: {
-        capitalReserve: 500_000,
-        maxExposureToCapitalRatio: 3.0,
-        maxSingleWatchUncoveredExposure: 50_000,
-        maxActiveRentals: 100,
-      },
-      idempotencyStore: new InMemoryIdempotencyStore(),
-    },
-    owner: {
-      paymentProvider: pp,
-      userRepo,
-      connectedAccountStore: new InMemoryConnectedAccountStore(),
-    },
-    webhookController: new WebhookController({
-      paymentService: new MarketplacePaymentService(pp, auditLog),
-      rentalRepo,
-      auditLog,
-      processedEvents: new InMemoryProcessedWebhookEventStore(),
-      verifyWebhook: () => { throw new Error('not configured'); },
-    }),
-  };
-
-  return { app: createApp(deps), deps };
-}
-
-async function seedOwner(deps: AppDeps): Promise<void> {
+async function seedOwner(deps: ReturnType<typeof makeTestApp>['deps']): Promise<void> {
   const owner = User.create({
     id: OWNER_ID,
     role: MarketplaceRole.OWNER,
@@ -89,30 +22,46 @@ async function seedOwner(deps: AppDeps): Promise<void> {
 }
 
 describe('POST /owners/:ownerId/connected-account', () => {
-  it('creates connected account for valid owner', async () => {
-    const { app, deps } = makeOwnerApp();
-    await seedOwner(deps);
+  it('returns 401 without auth token', async () => {
+    const { app } = makeTestApp();
 
     const res = await request(app)
       .post(`/owners/${OWNER_ID}/connected-account`)
       .send({ email: 'owner@test.com', country: 'US' });
 
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('creates connected account for valid owner', async () => {
+    const { app, deps } = makeTestApp();
+    await seedOwner(deps);
+    const token = signToken(OWNER_ID, MarketplaceRole.OWNER);
+
+    const res = await request(app)
+      .post(`/owners/${OWNER_ID}/connected-account`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'owner@test.com', country: 'US' });
+
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
-    expect(res.body.data.connectedAccountId).toBe('acct_owner_123');
+    expect(res.body.data.connectedAccountId).toBe('acct_test');
     expect(res.body.data.alreadyExists).toBe(false);
   });
 
   it('returns existing account idempotently', async () => {
-    const { app, deps } = makeOwnerApp();
+    const { app, deps } = makeTestApp();
     await seedOwner(deps);
+    const token = signToken(OWNER_ID, MarketplaceRole.OWNER);
 
     await request(app)
       .post(`/owners/${OWNER_ID}/connected-account`)
+      .set('Authorization', `Bearer ${token}`)
       .send({ email: 'owner@test.com', country: 'US' });
 
     const res2 = await request(app)
       .post(`/owners/${OWNER_ID}/connected-account`)
+      .set('Authorization', `Bearer ${token}`)
       .send({ email: 'owner@test.com', country: 'US' });
 
     expect(res2.status).toBe(200);
@@ -120,10 +69,12 @@ describe('POST /owners/:ownerId/connected-account', () => {
   });
 
   it('rejects invalid ownerId', async () => {
-    const { app } = makeOwnerApp();
+    const token = signToken(OWNER_ID, MarketplaceRole.OWNER);
+    const { app } = makeTestApp();
 
     const res = await request(app)
       .post('/owners/not-a-uuid/connected-account')
+      .set('Authorization', `Bearer ${token}`)
       .send({ email: 'owner@test.com', country: 'US' });
 
     expect(res.status).toBe(400);
@@ -131,60 +82,98 @@ describe('POST /owners/:ownerId/connected-account', () => {
   });
 
   it('rejects invalid email', async () => {
-    const { app } = makeOwnerApp();
+    const token = signToken(OWNER_ID, MarketplaceRole.OWNER);
+    const { app } = makeTestApp();
 
     const res = await request(app)
       .post(`/owners/${OWNER_ID}/connected-account`)
+      .set('Authorization', `Bearer ${token}`)
       .send({ email: 'not-an-email', country: 'US' });
 
     expect(res.status).toBe(400);
   });
 
   it('returns 404 for nonexistent owner', async () => {
-    const { app } = makeOwnerApp();
+    const token = signToken(OWNER_ID, MarketplaceRole.OWNER);
+    const { app } = makeTestApp();
 
     const res = await request(app)
       .post(`/owners/${OWNER_ID}/connected-account`)
+      .set('Authorization', `Bearer ${token}`)
       .send({ email: 'owner@test.com', country: 'US' });
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
   });
+
+  it('rejects different non-admin user with 403', async () => {
+    const { app, deps } = makeTestApp();
+    await seedOwner(deps);
+    const token = signToken(OTHER_USER_ID, MarketplaceRole.RENTER);
+
+    const res = await request(app)
+      .post(`/owners/${OWNER_ID}/connected-account`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'owner@test.com', country: 'US' });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('allows admin to create connected account for any owner', async () => {
+    const { app, deps } = makeTestApp();
+    await seedOwner(deps);
+    const adminToken = signToken(OTHER_USER_ID, MarketplaceRole.ADMIN);
+
+    const res = await request(app)
+      .post(`/owners/${OWNER_ID}/connected-account`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ email: 'owner@test.com', country: 'US' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.connectedAccountId).toBe('acct_test');
+  });
 });
 
 describe('POST /owners/:ownerId/onboarding-link', () => {
   it('returns onboarding link for valid account', async () => {
-    const { app, deps } = makeOwnerApp();
+    const { app, deps } = makeTestApp();
     await seedOwner(deps);
+    const token = signToken(OWNER_ID, MarketplaceRole.OWNER);
 
     // First create the connected account
     await request(app)
       .post(`/owners/${OWNER_ID}/connected-account`)
+      .set('Authorization', `Bearer ${token}`)
       .send({ email: 'owner@test.com', country: 'US' });
 
     const res = await request(app)
       .post(`/owners/${OWNER_ID}/onboarding-link`)
+      .set('Authorization', `Bearer ${token}`)
       .send({
-        connectedAccountId: 'acct_owner_123',
+        connectedAccountId: 'acct_test',
         returnUrl: 'https://app.test.com/return',
         refreshUrl: 'https://app.test.com/refresh',
       });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.data.url).toBe('https://connect.stripe.com/onboard');
+    expect(res.body.data.url).toBe('https://connect.stripe.com/test');
   });
 
   it('rejects mismatched connected account', async () => {
-    const { app, deps } = makeOwnerApp();
+    const { app, deps } = makeTestApp();
     await seedOwner(deps);
+    const token = signToken(OWNER_ID, MarketplaceRole.OWNER);
 
     await request(app)
       .post(`/owners/${OWNER_ID}/connected-account`)
+      .set('Authorization', `Bearer ${token}`)
       .send({ email: 'owner@test.com', country: 'US' });
 
     const res = await request(app)
       .post(`/owners/${OWNER_ID}/onboarding-link`)
+      .set('Authorization', `Bearer ${token}`)
       .send({
         connectedAccountId: 'acct_wrong',
         returnUrl: 'https://app.test.com/return',
@@ -193,5 +182,30 @@ describe('POST /owners/:ownerId/onboarding-link', () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('CONNECTED_ACCOUNT_MISSING');
+  });
+
+  it('rejects different non-admin user with 403', async () => {
+    const { app, deps } = makeTestApp();
+    await seedOwner(deps);
+    const ownerToken = signToken(OWNER_ID, MarketplaceRole.OWNER);
+    const otherToken = signToken(OTHER_USER_ID, MarketplaceRole.RENTER);
+
+    // Create connected account as owner
+    await request(app)
+      .post(`/owners/${OWNER_ID}/connected-account`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ email: 'owner@test.com', country: 'US' });
+
+    const res = await request(app)
+      .post(`/owners/${OWNER_ID}/onboarding-link`)
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send({
+        connectedAccountId: 'acct_test',
+        returnUrl: 'https://app.test.com/return',
+        refreshUrl: 'https://app.test.com/refresh',
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
   });
 });

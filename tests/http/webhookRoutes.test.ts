@@ -24,6 +24,7 @@ import { DomainError } from '../../src/domain/errors/DomainError';
 import { NormalizedEventType, PaymentProviderEvent } from '../../src/application/payments/PaymentProviderEvent';
 import { Rental } from '../../src/domain/entities/Rental';
 import { Express } from 'express';
+import { testTokenService } from './testAuthHelper';
 
 function makePaymentProvider(): PaymentProvider {
   return {
@@ -81,6 +82,7 @@ function makeWebhookApp(opts: {
       connectedAccountStore: new InMemoryConnectedAccountStore(),
     },
     webhookController,
+    tokenService: testTokenService,
   };
 
   return { app: createApp(deps), rentalRepo, processedEvents };
