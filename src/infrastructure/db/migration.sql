@@ -361,3 +361,97 @@ CREATE INDEX IF NOT EXISTS idx_outbox_events_stale_leases
 -- Aggregate lookup: find all outbox events for a given aggregate
 CREATE INDEX IF NOT EXISTS idx_outbox_events_aggregate
   ON outbox_events(aggregate_type, aggregate_id);
+
+-- ============================================================
+-- ENUM: reconciliation_run_status
+-- ============================================================
+
+DO $$ BEGIN
+  CREATE TYPE reconciliation_run_status AS ENUM ('RUNNING', 'COMPLETED', 'FAILED');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================
+-- ENUM: reconciliation_finding_status
+-- ============================================================
+
+DO $$ BEGIN
+  CREATE TYPE reconciliation_finding_status AS ENUM (
+    'OPEN', 'ACKNOWLEDGED', 'REPAIRED', 'SUPPRESSED', 'ESCALATED'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================
+-- ENUM: reconciliation_severity
+-- ============================================================
+
+DO $$ BEGIN
+  CREATE TYPE reconciliation_severity AS ENUM (
+    'INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================
+-- RECONCILIATION RUNS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS reconciliation_runs (
+  id                    UUID PRIMARY KEY,
+  triggered_by          TEXT                        NOT NULL,
+  status                reconciliation_run_status   NOT NULL DEFAULT 'RUNNING',
+  started_at            TIMESTAMPTZ                 NOT NULL DEFAULT now(),
+  completed_at          TIMESTAMPTZ,
+  total_checked         INTEGER                     NOT NULL DEFAULT 0 CHECK (total_checked >= 0),
+  total_findings        INTEGER                     NOT NULL DEFAULT 0 CHECK (total_findings >= 0),
+  findings_by_severity  JSONB                       NOT NULL DEFAULT '{}'::jsonb,
+  repaired_count        INTEGER                     NOT NULL DEFAULT 0 CHECK (repaired_count >= 0),
+  escalated_count       INTEGER                     NOT NULL DEFAULT 0 CHECK (escalated_count >= 0),
+  failed_checks         INTEGER                     NOT NULL DEFAULT 0 CHECK (failed_checks >= 0),
+  error                 TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_runs_status
+  ON reconciliation_runs(status, started_at);
+
+-- ============================================================
+-- RECONCILIATION FINDINGS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS reconciliation_findings (
+  id                    UUID PRIMARY KEY,
+  run_id                UUID                            NOT NULL REFERENCES reconciliation_runs(id),
+  aggregate_type        TEXT                            NOT NULL,
+  aggregate_id          TEXT                            NOT NULL,
+  provider_object_ids   JSONB                           NOT NULL DEFAULT '[]'::jsonb,
+  internal_snapshot     JSONB                           NOT NULL DEFAULT '{}'::jsonb,
+  provider_snapshot     JSONB                           NOT NULL DEFAULT '{}'::jsonb,
+  drift_type            TEXT                            NOT NULL,
+  severity              reconciliation_severity         NOT NULL,
+  recommended_action    TEXT                            NOT NULL,
+  status                reconciliation_finding_status   NOT NULL DEFAULT 'OPEN',
+  created_at            TIMESTAMPTZ                     NOT NULL DEFAULT now(),
+  resolved_at           TIMESTAMPTZ,
+  resolved_by           TEXT,
+  repair_action         TEXT,
+  metadata              JSONB                           NOT NULL DEFAULT '{}'::jsonb
+);
+
+-- Unresolved findings by severity (most important queries)
+CREATE INDEX IF NOT EXISTS idx_reconciliation_findings_unresolved
+  ON reconciliation_findings(severity, created_at)
+  WHERE status NOT IN ('REPAIRED', 'SUPPRESSED');
+
+-- Aggregate lookup
+CREATE INDEX IF NOT EXISTS idx_reconciliation_findings_aggregate
+  ON reconciliation_findings(aggregate_type, aggregate_id);
+
+-- Run history
+CREATE INDEX IF NOT EXISTS idx_reconciliation_findings_run
+  ON reconciliation_findings(run_id);
+
+-- Dedup: open finding per aggregate + drift type
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_findings_open_dedup
+  ON reconciliation_findings(aggregate_type, aggregate_id, drift_type)
+  WHERE status NOT IN ('REPAIRED', 'SUPPRESSED');

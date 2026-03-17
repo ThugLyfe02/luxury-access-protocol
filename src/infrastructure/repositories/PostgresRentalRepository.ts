@@ -112,6 +112,18 @@ export class PostgresRentalRepository implements RentalRepository {
     return rows.map((row: Record<string, unknown>) => this.hydrateRow(row));
   }
 
+  async findAll(): Promise<Rental[]> {
+    const { rows } = await this.query(
+      `SELECT id, renter_id, watch_id, rental_price, escrow_status,
+              external_payment_intent_id, return_confirmed, dispute_open,
+              created_at, version
+       FROM rentals`,
+      [],
+    );
+
+    return rows.map((row: Record<string, unknown>) => this.hydrateRow(row));
+  }
+
   async findAllActive(): Promise<Rental[]> {
     const { rows } = await this.query(
       `SELECT id, renter_id, watch_id, rental_price, escrow_status,

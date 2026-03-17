@@ -7,6 +7,7 @@ import { createRentalRoutes, RentalRouteDeps } from './routes/rentalRoutes';
 import { createOwnerRoutes, OwnerRouteDeps } from './routes/ownerRoutes';
 import { createAdminRoutes, AdminRouteDeps } from './routes/adminRoutes';
 import { createOutboxAdminRoutes, OutboxAdminRouteDeps } from './routes/outboxAdminRoutes';
+import { createReconciliationAdminRoutes, ReconciliationAdminRouteDeps } from './routes/reconciliationAdminRoutes';
 import { createWebhookRoutes } from './routes/webhookRoutes';
 import { WebhookController } from './webhookController';
 import { JwtTokenService } from '../auth/JwtTokenService';
@@ -19,6 +20,7 @@ export interface AppDeps {
   owner: OwnerRouteDeps;
   admin?: AdminRouteDeps;
   outboxAdmin?: OutboxAdminRouteDeps;
+  reconciliationAdmin?: ReconciliationAdminRouteDeps;
   webhookController: WebhookController;
   tokenService: JwtTokenService;
 }
@@ -76,6 +78,9 @@ export function createApp(deps: AppDeps): Express {
   }
   if (deps.outboxAdmin) {
     app.use(createOutboxAdminRoutes(deps.outboxAdmin));
+  }
+  if (deps.reconciliationAdmin) {
+    app.use(createReconciliationAdminRoutes(deps.reconciliationAdmin));
   }
 
   // 9. Central error handler — must be registered last

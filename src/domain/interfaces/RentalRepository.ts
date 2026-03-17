@@ -16,6 +16,11 @@ export interface RentalRepository {
    */
   findAllActive(): Promise<Rental[]>;
   /**
+   * Return all rentals (including terminal).
+   * Used by reconciliation to check all records against provider truth.
+   */
+  findAll(): Promise<Rental[]>;
+  /**
    * Persist the rental. Uses optimistic concurrency: if the stored version
    * does not match the rental's version at load time, the save is rejected
    * with VERSION_CONFLICT. New rentals (not previously stored) are always accepted.

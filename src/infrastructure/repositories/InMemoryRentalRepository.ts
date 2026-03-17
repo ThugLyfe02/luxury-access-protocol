@@ -99,6 +99,14 @@ export class InMemoryRentalRepository implements RentalRepository {
     return results;
   }
 
+  async findAll(): Promise<Rental[]> {
+    const results: Rental[] = [];
+    for (const record of this.store.values()) {
+      results.push(fromRecord(record));
+    }
+    return results;
+  }
+
   async findAllActive(): Promise<Rental[]> {
     const results: Rental[] = [];
     for (const record of this.store.values()) {

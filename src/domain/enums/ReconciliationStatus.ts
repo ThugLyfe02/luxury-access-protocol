@@ -1,0 +1,7 @@
+export enum ReconciliationStatus {
+  OPEN = 'OPEN',
+  ACKNOWLEDGED = 'ACKNOWLEDGED',
+  REPAIRED = 'REPAIRED',
+  SUPPRESSED = 'SUPPRESSED',
+  ESCALATED = 'ESCALATED',
+}

@@ -65,6 +65,13 @@ import {
   CreateOnboardingLinkHandler,
 } from './infrastructure/outbox/ProviderCommandHandlers';
 import { createOutboxAdminRoutes } from './http/routes/outboxAdminRoutes';
+import { ReconciliationRepository } from './domain/interfaces/ReconciliationRepository';
+import { InMemoryReconciliationRepository } from './infrastructure/repositories/InMemoryReconciliationRepository';
+import { PostgresReconciliationRepository } from './infrastructure/repositories/PostgresReconciliationRepository';
+import { ReconciliationEngine } from './application/services/ReconciliationEngine';
+import { RepairExecutor } from './application/services/RepairExecutor';
+import { StubProviderSnapshotAdapter } from './infrastructure/reconciliation/StubProviderSnapshotAdapter';
+import { ReconciliationWorker } from './infrastructure/reconciliation/ReconciliationWorker';
 
 /**
  * Composition root.
@@ -101,6 +108,7 @@ let idempotencyStore: IdempotencyStore;
 let processedEvents: ProcessedWebhookEventStore;
 
 let outboxRepo: OutboxRepository;
+let reconciliationRepo: ReconciliationRepository;
 
 if (usePostgres) {
   userRepo = new PostgresUserRepository();
@@ -115,6 +123,7 @@ if (usePostgres) {
   idempotencyStore = new PostgresIdempotencyStore();
   processedEvents = new PostgresWebhookEventStore();
   outboxRepo = new PostgresOutboxRepository();
+  reconciliationRepo = new PostgresReconciliationRepository();
 } else {
   userRepo = new InMemoryUserRepository();
   watchRepo = new InMemoryWatchRepository();
@@ -127,6 +136,7 @@ if (usePostgres) {
   idempotencyStore = new InMemoryIdempotencyStore();
   processedEvents = new InMemoryProcessedWebhookEventStore();
   outboxRepo = new InMemoryOutboxRepository();
+  reconciliationRepo = new InMemoryReconciliationRepository();
 }
 
 const kycRepo = new InMemoryKycRepository();
@@ -198,6 +208,15 @@ const outboxWorker = new OutboxWorker(outboxRepo, outboxDispatcher, {
   error: (msg, meta) => console.error(`[outbox] ${msg}`, meta ?? ''),
 });
 
+// --- Reconciliation Infrastructure ---
+const providerSnapshotAdapter = new StubProviderSnapshotAdapter();
+const repairExecutor = new RepairExecutor(reconciliationRepo, rentalRepo, freezeRepo, manualReviewRepo, auditLogRepo);
+const reconciliationEngine = new ReconciliationEngine(reconciliationRepo, rentalRepo, providerSnapshotAdapter, repairExecutor, auditLogRepo);
+const reconciliationWorker = new ReconciliationWorker(reconciliationEngine, {
+  intervalMs: 300_000,
+  triggeredBy: 'reconciliation-worker',
+});
+
 // --- Application Services ---
 const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog, outboxRepo);
 const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog, outboxRepo);
@@ -242,6 +261,11 @@ const app = createApp({
   outboxAdmin: {
     outboxDiagnosticsService,
   },
+  reconciliationAdmin: {
+    reconciliationEngine,
+    repairExecutor,
+    reconciliationRepo,
+  },
   webhookController,
   tokenService,
 });
@@ -261,6 +285,9 @@ async function start(): Promise<void> {
   // Start the outbox worker for async side-effect processing
   outboxWorker.start();
 
+  // Start the reconciliation worker for periodic drift detection
+  reconciliationWorker.start();
+
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(
@@ -273,12 +300,14 @@ async function start(): Promise<void> {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   outboxWorker.stop();
+  reconciliationWorker.stop();
   if (usePostgres) await closePool();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   outboxWorker.stop();
+  reconciliationWorker.stop();
   if (usePostgres) await closePool();
   process.exit(0);
 });
