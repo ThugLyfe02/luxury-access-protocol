@@ -6,6 +6,7 @@ import { OutboxRepository } from '../../domain/interfaces/OutboxRepository';
 import { AuditLogRepository } from '../../domain/interfaces/AuditLogRepository';
 import { AuditLogEntry } from '../../domain/entities/AuditLogEntry';
 import { Rental } from '../../domain/entities/Rental';
+import { EscrowStatus } from '../../domain/enums/EscrowStatus';
 import { DriftDetector } from '../../domain/reconciliation/DriftDetector';
 import { InternalSnapshotBuilder } from '../../domain/reconciliation/InternalSnapshot';
 import { ProviderSnapshotAdapter } from '../../domain/reconciliation/ProviderSnapshot';
@@ -77,7 +78,7 @@ export class ReconciliationEngine {
     }
 
     try {
-      const internal = InternalSnapshotBuilder.fromRental(rental);
+      let internal = InternalSnapshotBuilder.fromRental(rental);
       const provider = await this.providerAdapter.fetchPaymentSnapshot(rental.externalPaymentIntentId);
 
       const drifts = DriftDetector.detectPaymentDrift(internal, provider);
@@ -89,13 +90,35 @@ export class ReconciliationEngine {
 
       if (!transferIdForReconciliation && this.outboxRepo) {
         transferIdForReconciliation = await this.recoverTransferIdFromOutbox(rental.id);
+
+        // Crash-window backfill: if outbox proves a transfer succeeded at Stripe
+        // but the rental's write-back was never completed (externalTransferId is null,
+        // escrowStatus is still CAPTURED), attempt to complete the state transition now.
+        //
+        // This is safe because:
+        // - The SUCCEEDED outbox event proves provider success (validated in N.5).
+        // - releaseFunds() enforces its own guards (returnConfirmed, !disputeOpen).
+        // - Already-released rentals are skipped (idempotent).
+        // - No money movement occurs — this is pure internal state completion.
+        // - Failure is non-fatal: backfill is caught and logged; drift detection
+        //   proceeds with the original state.
+        if (transferIdForReconciliation) {
+          const backfilled = await this.attemptTransferBackfill(rental, transferIdForReconciliation, triggeredBy);
+          if (backfilled) {
+            // Rebuild internal snapshot to reflect completed backfill.
+            // This ensures subsequent drift detection operates on the
+            // now-correct state (FUNDS_RELEASED_TO_OWNER + externalTransferId).
+            internal = InternalSnapshotBuilder.fromRental(rental);
+          }
+        }
       }
 
       if (transferIdForReconciliation) {
         const transferSnapshot = await this.providerAdapter.fetchTransferSnapshot(transferIdForReconciliation);
         const transferDrifts = DriftDetector.detectTransferDrift(
-          // If the rental doesn't have the transfer ID but we recovered it from outbox,
-          // inject it into the internal snapshot so drift detection can run correctly.
+          // If the rental doesn't have the transfer ID but we recovered it from outbox
+          // and backfill failed, inject it into the internal snapshot so drift detection
+          // can still run. If backfill succeeded, rental already has the transferId.
           transferIdForReconciliation !== rental.externalTransferId
             ? { ...internal, externalTransferId: transferIdForReconciliation }
             : internal,
@@ -230,6 +253,43 @@ export class ReconciliationEngine {
     await this.reconciliationRepo.saveRun(run);
 
     return result;
+  }
+
+  /**
+   * Attempt to complete a crash-window transfer write-back.
+   *
+   * Called when outbox recovery found a valid transferId but the rental
+   * has not yet transitioned to FUNDS_RELEASED_TO_OWNER. This completes
+   * the same state transition that TransferToOwnerHandler.completeRentalRelease
+   * would have done if the original write-back had succeeded.
+   *
+   * Guards:
+   * - Already released → skip (idempotent), return false
+   * - returnConfirmed = false → releaseFunds throws → caught, return false
+   * - disputeOpen = true → releaseFunds throws → caught, return false
+   * - OCC conflict on save → caught, return false (retry on next sweep)
+   *
+   * No money movement occurs — the Stripe transfer already happened.
+   * This is purely internal state completion.
+   *
+   * @returns true if rental was successfully backfilled and saved
+   */
+  private async attemptTransferBackfill(rental: Rental, transferId: string, triggeredBy: string): Promise<boolean> {
+    if (rental.escrowStatus === EscrowStatus.FUNDS_RELEASED_TO_OWNER) {
+      return false; // Already released — nothing to backfill
+    }
+
+    try {
+      rental.releaseFunds(transferId);
+      await this.rentalRepo.save(rental);
+      await this.logAudit(triggeredBy, 'reconciliation_transfer_backfill', 'Rental', rental.id);
+      return true;
+    } catch {
+      // Backfill failed (dispute opened, return not confirmed, OCC conflict, etc.)
+      // Non-fatal: drift detection will proceed with the original state.
+      // The next reconciliation sweep will retry.
+      return false;
+    }
   }
 
   /**
