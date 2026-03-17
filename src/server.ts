@@ -64,7 +64,6 @@ import {
   CreateConnectedAccountHandler,
   CreateOnboardingLinkHandler,
 } from './infrastructure/outbox/ProviderCommandHandlers';
-import { createOutboxAdminRoutes } from './http/routes/outboxAdminRoutes';
 import { ReconciliationRepository } from './domain/interfaces/ReconciliationRepository';
 import { InMemoryReconciliationRepository } from './infrastructure/repositories/InMemoryReconciliationRepository';
 import { PostgresReconciliationRepository } from './infrastructure/repositories/PostgresReconciliationRepository';
@@ -72,20 +71,17 @@ import { ReconciliationEngine } from './application/services/ReconciliationEngin
 import { RepairExecutor } from './application/services/RepairExecutor';
 import { StubProviderSnapshotAdapter } from './infrastructure/reconciliation/StubProviderSnapshotAdapter';
 import { ReconciliationWorker } from './infrastructure/reconciliation/ReconciliationWorker';
+import { loadResilienceConfig } from './infrastructure/resilience/ResilienceConfig';
+import { CircuitBreaker } from './infrastructure/resilience/CircuitBreaker';
+import { HealthMonitor } from './infrastructure/resilience/HealthMonitor';
+import { RateLimiter, InMemoryRateLimiterAdapter } from './infrastructure/resilience/RateLimiter';
+import { StructuredLogger, ConsoleLogSink } from './infrastructure/resilience/StructuredLogger';
 
 /**
  * Composition root.
  *
  * All dependencies are wired here — no service locator, no DI container.
  * Explicit constructor injection only.
- *
- * Modes:
- *   DATABASE_URL set → Postgres repositories + auto-migration
- *   STRIPE_SECRET_KEY set → real Stripe integration
- *   JWT_SECRET + INTERNAL_API_TOKEN → auth enforcement
- *
- * Auth is always required for user-facing routes.
- * No silent fallback to anonymous access.
  */
 
 const usePostgres = Boolean(process.env.DATABASE_URL);
@@ -94,6 +90,29 @@ const useStripe = Boolean(process.env.STRIPE_SECRET_KEY);
 // --- Auth ---
 const authConfig = loadAuthConfig();
 const tokenService = new JwtTokenService(authConfig);
+
+// --- Resilience Config ---
+const resilienceConfig = loadResilienceConfig();
+
+// --- Structured Logger ---
+const logger = new StructuredLogger(new ConsoleLogSink());
+
+// --- Circuit Breakers ---
+const providerWriteBreaker = new CircuitBreaker({
+  name: 'provider-write',
+  failureThreshold: resilienceConfig.breakerFailureThreshold,
+  resetTimeoutMs: resilienceConfig.breakerResetTimeoutMs,
+  halfOpenMaxProbes: resilienceConfig.breakerHalfOpenMaxProbes,
+});
+
+const providerReadBreaker = new CircuitBreaker({
+  name: 'provider-read',
+  failureThreshold: resilienceConfig.breakerFailureThreshold,
+  resetTimeoutMs: resilienceConfig.breakerResetTimeoutMs,
+  halfOpenMaxProbes: resilienceConfig.breakerHalfOpenMaxProbes,
+});
+
+const allBreakers = [providerWriteBreaker, providerReadBreaker];
 
 // --- Infrastructure: Repositories ---
 let userRepo: UserRepository;
@@ -141,6 +160,18 @@ if (usePostgres) {
 
 const kycRepo = new InMemoryKycRepository();
 const insuranceRepo = new InMemoryInsuranceRepository();
+
+// --- Health Monitor ---
+const healthMonitor = new HealthMonitor(resilienceConfig, allBreakers, {
+  outboxPending: async () => {
+    const diag = await outboxRepo.diagnostics();
+    return diag.pending + diag.processing;
+  },
+  reconUnresolvedCritical: async () => {
+    const diag = await reconciliationRepo.diagnostics();
+    return (diag.countBySeverity['CRITICAL'] ?? 0);
+  },
+});
 
 // --- Infrastructure: Payment Provider ---
 let paymentProvider: PaymentProvider;
@@ -194,18 +225,16 @@ outboxDispatcher.register('payment.transfer_to_owner', new TransferToOwnerHandle
 outboxDispatcher.register('payment.connected_account.create', new CreateConnectedAccountHandler(paymentProvider));
 outboxDispatcher.register('payment.onboarding_link.create', new CreateOnboardingLinkHandler(paymentProvider));
 
+const outboxLogger = logger.child({ workerName: 'outbox-worker' });
 const outboxWorker = new OutboxWorker(outboxRepo, outboxDispatcher, {
   workerId: `worker-${process.pid}`,
-  batchSize: 10,
+  batchSize: resilienceConfig.outboxWorkerBatchSize,
   pollIntervalMs: 1000,
   staleLeaseThresholdMs: 60_000,
 }, {
-  // eslint-disable-next-line no-console
-  info: (msg, meta) => console.log(`[outbox] ${msg}`, meta ?? ''),
-  // eslint-disable-next-line no-console
-  warn: (msg, meta) => console.warn(`[outbox] ${msg}`, meta ?? ''),
-  // eslint-disable-next-line no-console
-  error: (msg, meta) => console.error(`[outbox] ${msg}`, meta ?? ''),
+  info: (msg, meta) => outboxLogger.info(msg, meta),
+  warn: (msg, meta) => outboxLogger.warn(msg, meta),
+  error: (msg, meta) => outboxLogger.error(msg, meta),
 });
 
 // --- Reconciliation Infrastructure ---
@@ -216,6 +245,23 @@ const reconciliationWorker = new ReconciliationWorker(reconciliationEngine, {
   intervalMs: 300_000,
   triggeredBy: 'reconciliation-worker',
 });
+
+// --- Rate Limiters ---
+const rentalRateLimiter = new RateLimiter(
+  new InMemoryRateLimiterAdapter(),
+  resilienceConfig.rateLimitWindowMs,
+  resilienceConfig.rateLimitRentalInitiation,
+);
+const ownerRateLimiter = new RateLimiter(
+  new InMemoryRateLimiterAdapter(),
+  resilienceConfig.rateLimitWindowMs,
+  resilienceConfig.rateLimitOwnerOnboarding,
+);
+const adminRepairRateLimiter = new RateLimiter(
+  new InMemoryRateLimiterAdapter(),
+  resilienceConfig.rateLimitWindowMs,
+  resilienceConfig.rateLimitAdminRepair,
+);
 
 // --- Application Services ---
 const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog, outboxRepo);
@@ -236,6 +282,7 @@ const app = createApp({
   health: {
     persistence: usePostgres ? 'postgres' : 'memory',
     stripe: useStripe ? 'live' : 'stub',
+    healthMonitor,
   },
   rental: {
     initiateRentalService,
@@ -266,8 +313,18 @@ const app = createApp({
     repairExecutor,
     reconciliationRepo,
   },
+  resilienceAdmin: {
+    healthMonitor,
+    breakers: allBreakers,
+    resilienceConfig,
+  },
   webhookController,
   tokenService,
+  rateLimiters: {
+    rentalInitiation: rentalRateLimiter,
+    ownerOnboarding: ownerRateLimiter,
+    adminRepair: adminRepairRateLimiter,
+  },
 });
 
 // --- Start ---
@@ -275,30 +332,32 @@ const PORT = process.env.PORT ?? 3000;
 
 async function start(): Promise<void> {
   if (usePostgres) {
-    // eslint-disable-next-line no-console
-    console.log('DATABASE_URL detected — running schema migration…');
+    logger.info('Running schema migration', { operation: 'startup' });
     await runMigration();
-    // eslint-disable-next-line no-console
-    console.log('Schema migration complete.');
+    logger.info('Schema migration complete', { operation: 'startup' });
   }
 
-  // Start the outbox worker for async side-effect processing
+  // Start workers
   outboxWorker.start();
-
-  // Start the reconciliation worker for periodic drift detection
   reconciliationWorker.start();
 
+  // Record initial worker heartbeats
+  healthMonitor.recordWorkerHeartbeat('outbox-worker', true);
+  healthMonitor.recordWorkerHeartbeat('reconciliation-worker', true);
+
   app.listen(PORT, () => {
-    // eslint-disable-next-line no-console
-    console.log(
-      `luxury-access-protocol listening on port ${PORT} ` +
-      `(persistence: ${usePostgres ? 'postgres' : 'memory'}, stripe: ${useStripe ? 'live' : 'stub'})`,
-    );
+    logger.info('Server started', {
+      operation: 'startup',
+      port: PORT,
+      persistence: usePostgres ? 'postgres' : 'memory',
+      stripe: useStripe ? 'live' : 'stub',
+    });
   });
 }
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received, shutting down', { operation: 'shutdown' });
   outboxWorker.stop();
   reconciliationWorker.stop();
   if (usePostgres) await closePool();
@@ -306,6 +365,7 @@ process.on('SIGTERM', async () => {
 });
 
 process.on('SIGINT', async () => {
+  logger.info('SIGINT received, shutting down', { operation: 'shutdown' });
   outboxWorker.stop();
   reconciliationWorker.stop();
   if (usePostgres) await closePool();
@@ -313,8 +373,7 @@ process.on('SIGINT', async () => {
 });
 
 start().catch((err) => {
-  // eslint-disable-next-line no-console
-  console.error('Failed to start server:', err);
+  logger.error('Failed to start server', { operation: 'startup', error: err instanceof Error ? err.message : String(err) });
   process.exit(1);
 });
 
