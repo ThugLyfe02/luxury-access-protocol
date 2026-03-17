@@ -1,5 +1,6 @@
 import { Rental } from '../../domain/entities/Rental';
 import { RentalRepository } from '../../domain/interfaces/RentalRepository';
+import { DomainError } from '../../domain/errors/DomainError';
 
 interface RentalRecord {
   readonly id: string;
@@ -11,6 +12,7 @@ interface RentalRecord {
   readonly returnConfirmed: boolean;
   readonly disputeOpen: boolean;
   readonly createdAt: string;
+  readonly version: number;
 }
 
 function toRecord(rental: Rental): RentalRecord {
@@ -24,6 +26,7 @@ function toRecord(rental: Rental): RentalRecord {
     returnConfirmed: rental.returnConfirmed,
     disputeOpen: rental.disputeOpen,
     createdAt: rental.createdAt.toISOString(),
+    version: rental.version,
   };
 }
 
@@ -38,6 +41,7 @@ function fromRecord(record: RentalRecord): Rental {
     returnConfirmed: record.returnConfirmed,
     disputeOpen: record.disputeOpen,
     createdAt: new Date(record.createdAt),
+    version: record.version,
   });
 }
 
@@ -80,6 +84,18 @@ export class InMemoryRentalRepository implements RentalRepository {
   }
 
   async save(rental: Rental): Promise<void> {
+    const existing = this.store.get(rental.id);
+    if (existing) {
+      // Optimistic concurrency: every entity mutation bumps the version by 1.
+      // The stored version must equal entity.version - 1, meaning no other
+      // write changed the stored record between load and save.
+      if (existing.version !== rental.version - 1) {
+        throw new DomainError(
+          `Rental version conflict: expected stored version ${rental.version - 1}, found ${existing.version}`,
+          'VERSION_CONFLICT',
+        );
+      }
+    }
     this.store.set(rental.id, toRecord(rental));
   }
 }

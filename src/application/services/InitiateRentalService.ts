@@ -31,6 +31,7 @@ export interface InitiateRentalResult {
 
 export class InitiateRentalService {
   private readonly paymentProvider: PaymentProvider;
+  private readonly processedIdempotencyKeys = new Set<string>();
 
   constructor(paymentProvider: PaymentProvider) {
     this.paymentProvider = paymentProvider;
@@ -39,6 +40,7 @@ export class InitiateRentalService {
   async execute(
     actor: Actor,
     input: {
+      idempotencyKey?: string;
       renter: User;
       watch: Watch;
       rentalPrice: number;
@@ -73,6 +75,16 @@ export class InitiateRentalService {
 
     // 0b. Caller must not be the watch owner (self-rental authz boundary)
     AuthorizationGuard.rejectSelfOwned(actor, watch.ownerId);
+
+    // 0c. Idempotency check — reject duplicate requests
+    if (input.idempotencyKey) {
+      if (this.processedIdempotencyKeys.has(input.idempotencyKey)) {
+        throw new DomainError(
+          'Duplicate rental initiation request',
+          'DUPLICATE_REQUEST',
+        );
+      }
+    }
 
     // 1. Anti-custody firewall — hard stop
     RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
@@ -163,6 +175,11 @@ export class InitiateRentalService {
 
     // 14. Transition to awaiting external payment
     rental.startExternalPayment(sessionId);
+
+    // 15. Record idempotency key after successful creation
+    if (input.idempotencyKey) {
+      this.processedIdempotencyKeys.add(input.idempotencyKey);
+    }
 
     return {
       rental,

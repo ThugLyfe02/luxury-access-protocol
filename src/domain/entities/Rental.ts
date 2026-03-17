@@ -49,6 +49,7 @@ export class Rental {
   private _externalPaymentIntentId: string | null;
   private _returnConfirmed: boolean;
   private _disputeOpen: boolean;
+  private _version: number;
 
   private constructor(params: {
     id: string;
@@ -60,6 +61,7 @@ export class Rental {
     returnConfirmed: boolean;
     disputeOpen: boolean;
     createdAt: Date;
+    version: number;
   }) {
     this.id = params.id;
     this.renterId = params.renterId;
@@ -70,6 +72,7 @@ export class Rental {
     this._returnConfirmed = params.returnConfirmed;
     this._disputeOpen = params.disputeOpen;
     this.createdAt = params.createdAt;
+    this._version = params.version;
   }
 
   /**
@@ -109,6 +112,7 @@ export class Rental {
       returnConfirmed: false,
       disputeOpen: false,
       createdAt: params.createdAt,
+      version: 0,
     });
   }
 
@@ -128,6 +132,7 @@ export class Rental {
     returnConfirmed: boolean;
     disputeOpen: boolean;
     createdAt: Date;
+    version: number;
   }): Rental {
     if (!params.id) {
       throw new DomainError('Rental ID is required', 'INVALID_RENTAL_PARTIES');
@@ -196,6 +201,13 @@ export class Rental {
       );
     }
 
+    if (!Number.isInteger(params.version) || params.version < 0) {
+      throw new DomainError(
+        'Version must be a non-negative integer',
+        'VERSION_CONFLICT',
+      );
+    }
+
     return new Rental({
       id: params.id,
       renterId: params.renterId,
@@ -206,6 +218,7 @@ export class Rental {
       returnConfirmed: params.returnConfirmed,
       disputeOpen: params.disputeOpen,
       createdAt: params.createdAt,
+      version: params.version,
     });
   }
 
@@ -223,6 +236,14 @@ export class Rental {
 
   get disputeOpen(): boolean {
     return this._disputeOpen;
+  }
+
+  get version(): number {
+    return this._version;
+  }
+
+  private bumpVersion(): void {
+    this._version += 1;
   }
 
   isTerminal(): boolean {
@@ -249,6 +270,7 @@ export class Rental {
       );
     }
     this._returnConfirmed = true;
+    this.bumpVersion();
   }
 
   private transitionTo(nextStatus: EscrowStatus): void {
@@ -260,6 +282,7 @@ export class Rental {
       );
     }
     this._escrowStatus = nextStatus;
+    this.bumpVersion();
   }
 
   startExternalPayment(sessionId: string): void {
@@ -267,6 +290,12 @@ export class Rental {
       throw new DomainError(
         'External payment session ID is required',
         'INVALID_PAYMENT_TRANSITION',
+      );
+    }
+    if (this._externalPaymentIntentId !== null) {
+      throw new DomainError(
+        'External payment intent has already been assigned',
+        'DUPLICATE_REQUEST',
       );
     }
     this.transitionTo(EscrowStatus.AWAITING_EXTERNAL_PAYMENT);
@@ -310,6 +339,7 @@ export class Rental {
       );
     }
     this._disputeOpen = false;
+    this.bumpVersion();
   }
 
   /**

@@ -15,6 +15,7 @@ export class ManualReviewCase {
   private _resolvedBy: string | null;
   private _resolvedAt: Date | null;
   private _resolution: string | null;
+  private _version: number;
 
   private constructor(params: {
     id: string;
@@ -26,6 +27,7 @@ export class ManualReviewCase {
     resolvedBy: string | null;
     resolvedAt: Date | null;
     resolution: string | null;
+    version: number;
   }) {
     this.id = params.id;
     this.rentalId = params.rentalId;
@@ -36,6 +38,7 @@ export class ManualReviewCase {
     this._resolvedBy = params.resolvedBy;
     this._resolvedAt = params.resolvedAt;
     this._resolution = params.resolution;
+    this._version = params.version;
   }
 
   private static validate(params: {
@@ -80,6 +83,7 @@ export class ManualReviewCase {
       resolvedBy: null,
       resolvedAt: null,
       resolution: null,
+      version: 0,
     });
   }
 
@@ -93,6 +97,7 @@ export class ManualReviewCase {
     resolvedBy: string | null;
     resolvedAt: Date | null;
     resolution: string | null;
+    version: number;
   }): ManualReviewCase {
     ManualReviewCase.validate(params);
 
@@ -135,6 +140,13 @@ export class ManualReviewCase {
       }
     }
 
+    if (!Number.isInteger(params.version) || params.version < 0) {
+      throw new DomainError(
+        'Version must be a non-negative integer',
+        'VERSION_CONFLICT',
+      );
+    }
+
     return new ManualReviewCase({
       ...params,
       severity: params.severity as ReviewSeverity,
@@ -155,6 +167,10 @@ export class ManualReviewCase {
 
   get resolution(): string | null {
     return this._resolution;
+  }
+
+  get version(): number {
+    return this._version;
   }
 
   isBlocking(): boolean {
@@ -190,5 +206,6 @@ export class ManualReviewCase {
     this._resolvedBy = resolvedBy;
     this._resolvedAt = resolvedAt;
     this._resolution = resolution;
+    this._version += 1;
   }
 }

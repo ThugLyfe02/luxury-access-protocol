@@ -37,6 +37,17 @@ const SUPPORTED_EVENT_TYPES = new Set([
 export class WebhookController {
   private readonly paymentService: MarketplacePaymentService;
   private readonly rentalRepo: RentalRepository;
+  /**
+   * Tracks Stripe event IDs that have been successfully processed.
+   * This is a first-line dedup filter — if a retried webhook arrives
+   * with an event ID we've already processed, we immediately return
+   * 200 without touching the domain layer.
+   *
+   * In production, this would be backed by a persistent store (e.g.,
+   * a processed_events table with a unique constraint on event_id).
+   * The in-memory Set is sufficient for the current reconstruction stage.
+   */
+  private readonly processedEventIds = new Set<string>();
 
   constructor(deps: {
     paymentService: MarketplacePaymentService;
@@ -71,13 +82,19 @@ export class WebhookController {
 
       const event = validated.value;
 
-      // 2. Acknowledge unsupported event types without error
+      // 2. Event ID dedup — if we've already processed this event, ack immediately
+      if (this.processedEventIds.has(event.id)) {
+        res.status(200).json({ received: true, processed: false, reason: 'already_processed' });
+        return;
+      }
+
+      // 3. Acknowledge unsupported event types without error
       if (!SUPPORTED_EVENT_TYPES.has(event.type)) {
         res.status(200).json({ received: true, processed: false });
         return;
       }
 
-      // 3. Look up the rental by the Stripe object ID (payment intent / charge ID)
+      // 4. Look up the rental by the Stripe object ID (payment intent / charge ID)
       const stripeObjectId = event.data.object.id;
       const rental = await this.rentalRepo.findByExternalPaymentIntentId(stripeObjectId);
 
@@ -88,17 +105,20 @@ export class WebhookController {
         return;
       }
 
-      // 4. Build system actor for webhook context
+      // 5. Build system actor for webhook context
       const actor: SystemActor = {
         kind: 'system',
         source: `stripe_webhook:${event.type}`,
       };
 
-      // 5. Dispatch to the appropriate handler
+      // 6. Dispatch to the appropriate handler
       await this.dispatchEvent(actor, event.type, rental);
 
-      // 6. Persist updated rental state
+      // 7. Persist updated rental state
       await this.rentalRepo.save(rental);
+
+      // 8. Record event as processed (after successful save)
+      this.processedEventIds.add(event.id);
 
       res.status(200).json({ received: true, processed: true });
     } catch (error) {

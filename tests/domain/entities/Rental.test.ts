@@ -237,7 +237,7 @@ describe('Rental', () => {
         Rental.restore({
           id: 'r1', renterId: 'u1', watchId: 'w1', rentalPrice: 100,
           escrowStatus: 'BOGUS', externalPaymentIntentId: null,
-          returnConfirmed: false, disputeOpen: false, createdAt: NOW,
+          returnConfirmed: false, disputeOpen: false, createdAt: NOW, version: 0,
         }),
       ).toThrow(DomainError);
     });
@@ -247,7 +247,7 @@ describe('Rental', () => {
         Rental.restore({
           id: 'r1', renterId: 'u1', watchId: 'w1', rentalPrice: 100,
           escrowStatus: 'NOT_STARTED', externalPaymentIntentId: 'pi_x',
-          returnConfirmed: false, disputeOpen: false, createdAt: NOW,
+          returnConfirmed: false, disputeOpen: false, createdAt: NOW, version: 0,
         }),
       ).toThrow(DomainError);
     });
@@ -257,7 +257,7 @@ describe('Rental', () => {
         Rental.restore({
           id: 'r1', renterId: 'u1', watchId: 'w1', rentalPrice: 100,
           escrowStatus: 'AWAITING_EXTERNAL_PAYMENT', externalPaymentIntentId: 'pi_x',
-          returnConfirmed: true, disputeOpen: false, createdAt: NOW,
+          returnConfirmed: true, disputeOpen: false, createdAt: NOW, version: 1,
         }),
       ).toThrow(DomainError);
     });
@@ -267,7 +267,7 @@ describe('Rental', () => {
         Rental.restore({
           id: 'r1', renterId: 'u1', watchId: 'w1', rentalPrice: 100,
           escrowStatus: 'EXTERNAL_PAYMENT_CAPTURED', externalPaymentIntentId: 'pi_x',
-          returnConfirmed: false, disputeOpen: true, createdAt: NOW,
+          returnConfirmed: false, disputeOpen: true, createdAt: NOW, version: 2,
         }),
       ).toThrow(DomainError);
     });
