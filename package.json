@@ -6,7 +6,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "demo": "npx tsx src/demo/scenarios.ts"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
