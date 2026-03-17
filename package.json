@@ -4,11 +4,14 @@
   "private": true,
   "description": "Backend reconstruction for a regulated luxury asset access marketplace. Not production-ready.",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.0"
   },
   "dependencies": {
     "express": "^5.2.1"
