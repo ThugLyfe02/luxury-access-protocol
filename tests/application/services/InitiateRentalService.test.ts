@@ -11,6 +11,12 @@ import { RenterTier } from '../../../src/domain/enums/RenterTier';
 import { EscrowStatus } from '../../../src/domain/enums/EscrowStatus';
 import { PaymentProvider } from '../../../src/domain/interfaces/PaymentProvider';
 import { UserActor } from '../../../src/application/auth/Actor';
+import { AuditLog } from '../../../src/application/audit/AuditLog';
+import { InMemoryAuditSink } from '../../../src/infrastructure/audit/InMemoryAuditSink';
+
+function makeAuditLog(): AuditLog {
+  return new AuditLog(new InMemoryAuditSink());
+}
 
 const NOW = new Date('2025-06-01T00:00:00Z');
 const ONE_YEAR_AGO = new Date('2024-06-01T00:00:00Z');
@@ -92,7 +98,7 @@ describe('InitiateRentalService', () => {
   describe('happy path', () => {
     it('creates rental and transitions to AWAITING_EXTERNAL_PAYMENT', async () => {
       const provider = makePaymentProvider();
-      const service = new InitiateRentalService(provider);
+      const service = new InitiateRentalService(provider, makeAuditLog());
       const result = await service.execute(makeActor(), defaultInput());
 
       expect(result.rental.escrowStatus).toBe(EscrowStatus.AWAITING_EXTERNAL_PAYMENT);
@@ -106,14 +112,14 @@ describe('InitiateRentalService', () => {
 
   describe('auth gates', () => {
     it('blocks non-user actors', async () => {
-      const service = new InitiateRentalService(makePaymentProvider());
+      const service = new InitiateRentalService(makePaymentProvider(), makeAuditLog());
       await expect(
         service.execute({ kind: 'system', source: 'webhook' }, defaultInput()),
       ).rejects.toThrow(DomainError);
     });
 
     it('blocks actor mismatched with renter', async () => {
-      const service = new InitiateRentalService(makePaymentProvider());
+      const service = new InitiateRentalService(makePaymentProvider(), makeAuditLog());
       const wrongActor: UserActor = { kind: 'user', userId: 'wrong-user', role: MarketplaceRole.RENTER };
       await expect(
         service.execute(wrongActor, defaultInput()),
@@ -121,7 +127,7 @@ describe('InitiateRentalService', () => {
     });
 
     it('blocks self-rental (renter is watch owner)', async () => {
-      const service = new InitiateRentalService(makePaymentProvider());
+      const service = new InitiateRentalService(makePaymentProvider(), makeAuditLog());
       const actor: UserActor = { kind: 'user', userId: 'owner-1', role: MarketplaceRole.RENTER };
       const input = defaultInput();
       input.renter = User.create({
@@ -140,7 +146,7 @@ describe('InitiateRentalService', () => {
 
   describe('compliance gates', () => {
     it('blocks non-NYC city', async () => {
-      const service = new InitiateRentalService(makePaymentProvider());
+      const service = new InitiateRentalService(makePaymentProvider(), makeAuditLog());
       const input = defaultInput();
       input.city = 'LA';
       await expect(service.execute(makeActor(), input)).rejects.toThrow(DomainError);
@@ -150,7 +156,7 @@ describe('InitiateRentalService', () => {
     });
 
     it('blocks invalid NYC ZIP', async () => {
-      const service = new InitiateRentalService(makePaymentProvider());
+      const service = new InitiateRentalService(makePaymentProvider(), makeAuditLog());
       const input = defaultInput();
       input.zipCode = '90210';
       await expect(service.execute(makeActor(), input)).rejects.toThrow(DomainError);
@@ -159,7 +165,7 @@ describe('InitiateRentalService', () => {
 
   describe('KYC gate', () => {
     it('blocks null KYC', async () => {
-      const service = new InitiateRentalService(makePaymentProvider());
+      const service = new InitiateRentalService(makePaymentProvider(), makeAuditLog());
       const input = defaultInput();
       input.renterKyc = null;
       await expect(service.execute(makeActor(), input)).rejects.toThrow(DomainError);
@@ -171,7 +177,7 @@ describe('InitiateRentalService', () => {
 
   describe('risk policy gates', () => {
     it('blocks high-risk renter', async () => {
-      const service = new InitiateRentalService(makePaymentProvider());
+      const service = new InitiateRentalService(makePaymentProvider(), makeAuditLog());
       const input = defaultInput();
       input.renter = User.create({
         id: 'renter-1', role: MarketplaceRole.RENTER,
@@ -183,7 +189,7 @@ describe('InitiateRentalService', () => {
 
   describe('economics gate', () => {
     it('blocks economically unviable rental (too-low price, high-value watch)', async () => {
-      const service = new InitiateRentalService(makePaymentProvider());
+      const service = new InitiateRentalService(makePaymentProvider(), makeAuditLog());
       const input = defaultInput();
       // Watch value 1800 (under BRONZE $2000 ceiling) with rental price 1
       // platformGross = 1 * 0.20 = 0.20
@@ -205,7 +211,7 @@ describe('InitiateRentalService', () => {
 
   describe('exposure gate', () => {
     it('blocks when platform at max active rentals', async () => {
-      const service = new InitiateRentalService(makePaymentProvider());
+      const service = new InitiateRentalService(makePaymentProvider(), makeAuditLog());
       const input = defaultInput();
       // Watch value 1500 (under BRONZE $2000 ceiling) so tier gate passes
       input.exposureSnapshot = { totalActiveWatchValue: 0, totalInsuranceCoverage: 0, activeRentalCount: 100 };
@@ -218,7 +224,7 @@ describe('InitiateRentalService', () => {
 
   describe('critical risk signal gate', () => {
     it('blocks rental when renter KYC has PEP flag (critical signal)', async () => {
-      const service = new InitiateRentalService(makePaymentProvider());
+      const service = new InitiateRentalService(makePaymentProvider(), makeAuditLog());
       const input = defaultInput();
       const kyc = makeKyc();
       kyc.flagPep();

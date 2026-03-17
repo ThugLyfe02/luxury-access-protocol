@@ -8,6 +8,12 @@ import { ReviewSeverity } from '../../../src/domain/enums/ReviewSeverity';
 import { PaymentProvider } from '../../../src/domain/interfaces/PaymentProvider';
 import { SystemActor, UserActor } from '../../../src/application/auth/Actor';
 import { MarketplaceRole } from '../../../src/domain/enums/MarketplaceRole';
+import { AuditLog } from '../../../src/application/audit/AuditLog';
+import { InMemoryAuditSink } from '../../../src/infrastructure/audit/InMemoryAuditSink';
+
+function makeAuditLog(): AuditLog {
+  return new AuditLog(new InMemoryAuditSink());
+}
 
 const NOW = new Date('2025-06-01T00:00:00Z');
 
@@ -64,20 +70,20 @@ function makeRentalAtStatus(status: EscrowStatus): Rental {
 describe('MarketplacePaymentService', () => {
   describe('handlePaymentAuthorized', () => {
     it('transitions to AUTHORIZED', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.AWAITING_EXTERNAL_PAYMENT);
       await service.handlePaymentAuthorized(systemActor, rental);
       expect(rental.escrowStatus).toBe(EscrowStatus.EXTERNAL_PAYMENT_AUTHORIZED);
     });
 
     it('rejects non-system actor', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.AWAITING_EXTERNAL_PAYMENT);
       await expect(service.handlePaymentAuthorized(renterActor, rental)).rejects.toThrow(DomainError);
     });
 
     it('rejects terminal rental', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.REFUNDED);
       await expect(service.handlePaymentAuthorized(systemActor, rental)).rejects.toThrow(DomainError);
     });
@@ -86,7 +92,7 @@ describe('MarketplacePaymentService', () => {
   describe('handlePaymentCaptured', () => {
     it('calls capturePayment on provider and transitions', async () => {
       const provider = makePaymentProvider();
-      const service = new MarketplacePaymentService(provider);
+      const service = new MarketplacePaymentService(provider, makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_AUTHORIZED);
       await service.handlePaymentCaptured(systemActor, rental);
       expect(rental.escrowStatus).toBe(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
@@ -96,7 +102,7 @@ describe('MarketplacePaymentService', () => {
     it('blocks when provider fails to capture', async () => {
       const provider = makePaymentProvider();
       (provider.capturePayment as ReturnType<typeof vi.fn>).mockResolvedValue({ captured: false });
-      const service = new MarketplacePaymentService(provider);
+      const service = new MarketplacePaymentService(provider, makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_AUTHORIZED);
       await expect(service.handlePaymentCaptured(systemActor, rental)).rejects.toThrow(DomainError);
     });
@@ -105,7 +111,7 @@ describe('MarketplacePaymentService', () => {
   describe('handlePaymentRefunded', () => {
     it('calls refundPayment and transitions to REFUNDED', async () => {
       const provider = makePaymentProvider();
-      const service = new MarketplacePaymentService(provider);
+      const service = new MarketplacePaymentService(provider, makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
       await service.handlePaymentRefunded(systemActor, rental);
       expect(rental.escrowStatus).toBe(EscrowStatus.REFUNDED);
@@ -122,7 +128,7 @@ describe('MarketplacePaymentService', () => {
 
     it('happy path: transfers and transitions to RELEASED', async () => {
       const provider = makePaymentProvider();
-      const service = new MarketplacePaymentService(provider);
+      const service = new MarketplacePaymentService(provider, makeAuditLog());
       const rental = makeReleasableRental();
 
       const result = await service.releaseToOwner(adminActor, {
@@ -143,7 +149,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks non-admin, non-system actor', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeReleasableRental();
       await expect(
         service.releaseToOwner(renterActor, {
@@ -153,7 +159,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks terminal rental', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.FUNDS_RELEASED_TO_OWNER);
       await expect(
         service.releaseToOwner(adminActor, {
@@ -163,7 +169,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks when not in CAPTURED state', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_AUTHORIZED);
       await expect(
         service.releaseToOwner(adminActor, {
@@ -173,7 +179,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks without confirmed return', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
       // NOT calling confirmReturn()
       await expect(
@@ -191,7 +197,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks while dispute is open', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
       rental.confirmReturn();
       rental.markDisputed();
@@ -204,7 +210,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks with unresolved blocking review cases', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeReleasableRental();
       const blockingCase = ManualReviewCase.create({
         id: 'rc-1', rentalId: 'rental-1', severity: ReviewSeverity.HIGH,
@@ -228,7 +234,7 @@ describe('MarketplacePaymentService', () => {
 
     it('allows resolved review cases (non-blocking)', async () => {
       const provider = makePaymentProvider();
-      const service = new MarketplacePaymentService(provider);
+      const service = new MarketplacePaymentService(provider, makeAuditLog());
       const rental = makeReleasableRental();
       const resolvedCase = ManualReviewCase.create({
         id: 'rc-1', rentalId: 'rental-1', severity: ReviewSeverity.HIGH,
@@ -244,7 +250,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks missing connected account', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeReleasableRental();
       await expect(
         service.releaseToOwner(adminActor, {
@@ -254,7 +260,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks zero owner share', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeReleasableRental();
       await expect(
         service.releaseToOwner(adminActor, {
@@ -264,7 +270,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks owner share exceeding rental price (ceiling check)', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeReleasableRental();
       await expect(
         service.releaseToOwner(adminActor, {
@@ -276,7 +282,7 @@ describe('MarketplacePaymentService', () => {
 
   describe('confirmReturn', () => {
     it('allows watch owner to confirm', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
       const ownerActor: UserActor = { kind: 'user', userId: 'owner-1', role: MarketplaceRole.OWNER };
       await service.confirmReturn(ownerActor, rental, 'owner-1');
@@ -284,7 +290,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks renter from self-confirming return', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
       await expect(
         service.confirmReturn(renterActor, rental, 'owner-1'),
@@ -292,7 +298,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks confirm on terminal rental', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.REFUNDED);
       await expect(
         service.confirmReturn(adminActor, rental, 'owner-1'),
@@ -302,7 +308,7 @@ describe('MarketplacePaymentService', () => {
 
   describe('restoreDisputedToCaptured', () => {
     it('restores after dispute resolution', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.DISPUTED);
       rental.resolveDispute();
       await service.restoreDisputedToCaptured(systemActor, rental);
@@ -310,7 +316,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks when not in DISPUTED state', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_CAPTURED);
       await expect(
         service.restoreDisputedToCaptured(systemActor, rental),
@@ -318,7 +324,7 @@ describe('MarketplacePaymentService', () => {
     });
 
     it('blocks non-admin/non-system actor', async () => {
-      const service = new MarketplacePaymentService(makePaymentProvider());
+      const service = new MarketplacePaymentService(makePaymentProvider(), makeAuditLog());
       const rental = makeRentalAtStatus(EscrowStatus.DISPUTED);
       rental.resolveDispute();
       await expect(

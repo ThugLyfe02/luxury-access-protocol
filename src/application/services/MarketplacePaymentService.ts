@@ -6,6 +6,7 @@ import { ManualReviewCase } from '../../domain/entities/ManualReviewCase';
 import { RegulatoryGuardrails } from '../../domain/services/RegulatoryGuardrails';
 import { Actor } from '../auth/Actor';
 import { AuthorizationGuard } from '../auth/AuthorizationGuard';
+import { AuditLog } from '../audit/AuditLog';
 
 /**
  * Orchestrates interaction between the platform and the external payment
@@ -16,9 +17,11 @@ import { AuthorizationGuard } from '../auth/AuthorizationGuard';
  */
 export class MarketplacePaymentService {
   private readonly paymentProvider: PaymentProvider;
+  private readonly auditLog: AuditLog;
 
-  constructor(paymentProvider: PaymentProvider) {
+  constructor(paymentProvider: PaymentProvider, auditLog: AuditLog) {
     this.paymentProvider = paymentProvider;
+    this.auditLog = auditLog;
   }
 
   /**
@@ -42,7 +45,19 @@ export class MarketplacePaymentService {
       );
     }
 
+    const beforeState = rental.escrowStatus;
     rental.markPaymentAuthorized();
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: 'payment_authorized',
+      outcome: 'success',
+      beforeState,
+      afterState: rental.escrowStatus,
+      externalRef: rental.externalPaymentIntentId,
+    });
   }
 
   /**
@@ -79,7 +94,19 @@ export class MarketplacePaymentService {
       );
     }
 
+    const beforeState = rental.escrowStatus;
     rental.markPaymentCaptured();
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: 'payment_captured',
+      outcome: 'success',
+      beforeState,
+      afterState: rental.escrowStatus,
+      externalRef: rental.externalPaymentIntentId,
+    });
   }
 
   /**
@@ -115,7 +142,19 @@ export class MarketplacePaymentService {
       );
     }
 
+    const beforeState = rental.escrowStatus;
     rental.markRefunded();
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: 'payment_refunded',
+      outcome: 'success',
+      beforeState,
+      afterState: rental.escrowStatus,
+      externalRef: rental.externalPaymentIntentId,
+    });
   }
 
   /**
@@ -133,7 +172,19 @@ export class MarketplacePaymentService {
 
     this.rejectIfTerminal(rental);
 
+    const beforeState = rental.escrowStatus;
     rental.markDisputed();
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: 'dispute_opened',
+      outcome: 'success',
+      beforeState,
+      afterState: rental.escrowStatus,
+      externalRef: rental.externalPaymentIntentId,
+    });
   }
 
   /**
@@ -155,6 +206,16 @@ export class MarketplacePaymentService {
     this.rejectIfTerminal(rental);
 
     rental.resolveDispute();
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: 'dispute_resolved',
+      outcome: 'success',
+      afterState: `${rental.escrowStatus}:disputeOpen=${rental.disputeOpen}`,
+      externalRef: rental.externalPaymentIntentId,
+    });
   }
 
   /**
@@ -177,6 +238,15 @@ export class MarketplacePaymentService {
     this.rejectIfTerminal(rental);
 
     rental.confirmReturn();
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: 'confirm_return',
+      outcome: 'success',
+      afterState: `${rental.escrowStatus}:returnConfirmed=${rental.returnConfirmed}`,
+    });
   }
 
   /**
@@ -203,7 +273,18 @@ export class MarketplacePaymentService {
       );
     }
 
+    const beforeState = rental.escrowStatus;
     rental.restoreToCaptured();
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: rental.id,
+      action: 'restore_disputed_to_captured',
+      outcome: 'success',
+      beforeState,
+      afterState: rental.escrowStatus,
+    });
   }
 
   private rejectIfTerminal(rental: Rental): void {
@@ -330,7 +411,19 @@ export class MarketplacePaymentService {
 
     // Entity-level transition to terminal FUNDS_RELEASED_TO_OWNER state.
     // This also re-checks return + dispute gates at the entity level.
+    const beforeState = params.rental.escrowStatus;
     params.rental.releaseFunds();
+
+    this.auditLog.record({
+      actor,
+      entityType: 'Rental',
+      entityId: params.rental.id,
+      action: 'release_to_owner',
+      outcome: 'success',
+      beforeState,
+      afterState: params.rental.escrowStatus,
+      externalRef: transferId,
+    });
 
     return { transferId };
   }

@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { MarketplacePaymentService } from '../application/services/MarketplacePaymentService';
 import { SystemActor } from '../application/auth/Actor';
 import { RentalRepository } from '../domain/interfaces/RentalRepository';
+import { AuditLog } from '../application/audit/AuditLog';
+import { DomainError } from '../domain/errors/DomainError';
 import { validateStripeWebhookBody } from './validation';
 import { sendError } from './errorMapper';
 
@@ -49,12 +51,16 @@ export class WebhookController {
    */
   private readonly processedEventIds = new Set<string>();
 
+  private readonly auditLog: AuditLog;
+
   constructor(deps: {
     paymentService: MarketplacePaymentService;
     rentalRepo: RentalRepository;
+    auditLog: AuditLog;
   }) {
     this.paymentService = deps.paymentService;
     this.rentalRepo = deps.rentalRepo;
+    this.auditLog = deps.auditLog;
   }
 
   /**
@@ -84,6 +90,16 @@ export class WebhookController {
 
       // 2. Event ID dedup — if we've already processed this event, ack immediately
       if (this.processedEventIds.has(event.id)) {
+        this.auditLog.record({
+          actor: { kind: 'system', source: `stripe_webhook:${event.type}` },
+          entityType: 'StripeEvent',
+          entityId: event.id,
+          action: 'webhook_dedup_skip',
+          outcome: 'blocked',
+          errorCode: 'DUPLICATE_REQUEST',
+          errorMessage: 'Event already processed',
+          externalRef: event.id,
+        });
         res.status(200).json({ received: true, processed: false, reason: 'already_processed' });
         return;
       }
@@ -120,12 +136,34 @@ export class WebhookController {
       // 8. Record event as processed (after successful save)
       this.processedEventIds.add(event.id);
 
+      // 9. Audit: webhook successfully processed
+      this.auditLog.record({
+        actor,
+        entityType: 'Rental',
+        entityId: rental.id,
+        action: `webhook_processed:${event.type}`,
+        outcome: 'success',
+        afterState: rental.escrowStatus,
+        externalRef: event.id,
+      });
+
       res.status(200).json({ received: true, processed: true });
     } catch (error) {
       // Idempotency handling: if the domain rejects a transition because
       // the rental is already in the target state (duplicate webhook),
       // we return 200 to stop Stripe from retrying.
       if (this.isDuplicateTransitionError(error)) {
+        if (error instanceof DomainError) {
+          this.auditLog.record({
+            actor: { kind: 'system', source: 'stripe_webhook' },
+            entityType: 'Rental',
+            entityId: 'unknown',
+            action: 'webhook_duplicate_transition',
+            outcome: 'blocked',
+            errorCode: error.code,
+            errorMessage: error.message,
+          });
+        }
         res.status(200).json({ received: true, processed: false, reason: 'duplicate_event' });
         return;
       }

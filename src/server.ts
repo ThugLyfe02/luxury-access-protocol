@@ -9,6 +9,8 @@ import { InMemoryKycRepository } from './infrastructure/repositories/InMemoryKyc
 import { InMemoryInsuranceRepository } from './infrastructure/repositories/InMemoryInsuranceRepository';
 import { InMemoryReviewRepository } from './infrastructure/repositories/InMemoryReviewRepository';
 import { ExposureConfig } from './domain/services/PlatformExposureEngine';
+import { AuditLog } from './application/audit/AuditLog';
+import { InMemoryAuditSink } from './infrastructure/audit/InMemoryAuditSink';
 import { RentalController } from './http/rentalController';
 import { WebhookController } from './http/webhookController';
 
@@ -24,7 +26,7 @@ import { WebhookController } from './http/webhookController';
  * - No real auth middleware (actor derived from request body)
  * - No Stripe signature verification on webhooks
  * - No persistent storage (in-memory repos)
- * - No logging / observability
+ * - Structured audit log (in-memory sink)
  * - No CORS / rate limiting / helmet
  */
 
@@ -47,9 +49,13 @@ const exposureConfig: ExposureConfig = {
   maxActiveRentals: 100,
 };
 
+// --- Audit ---
+const auditSink = new InMemoryAuditSink();
+const auditLog = new AuditLog(auditSink);
+
 // --- Application Services ---
-const initiateRentalService = new InitiateRentalService(paymentProvider);
-const marketplacePaymentService = new MarketplacePaymentService(paymentProvider);
+const initiateRentalService = new InitiateRentalService(paymentProvider, auditLog);
+const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog);
 
 // --- HTTP Controllers ---
 const rentalController = new RentalController({
@@ -66,6 +72,7 @@ const rentalController = new RentalController({
 const webhookController = new WebhookController({
   paymentService: marketplacePaymentService,
   rentalRepo,
+  auditLog,
 });
 
 // --- Express App ---
