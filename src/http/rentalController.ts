@@ -7,6 +7,7 @@ import { WatchRepository } from '../domain/interfaces/WatchRepository';
 import { RentalRepository } from '../domain/interfaces/RentalRepository';
 import { KycRepository } from '../domain/interfaces/KycRepository';
 import { InsuranceRepository } from '../domain/interfaces/InsuranceRepository';
+import { ClaimRepository } from '../domain/interfaces/ClaimRepository';
 import { ReviewRepository } from '../domain/interfaces/ReviewRepository';
 import { TierEngine } from '../domain/services/TierEngine';
 import {
@@ -35,6 +36,7 @@ export class RentalController {
   private readonly rentalRepo: RentalRepository;
   private readonly kycRepo: KycRepository;
   private readonly insuranceRepo: InsuranceRepository;
+  private readonly claimRepo: ClaimRepository;
   private readonly reviewRepo: ReviewRepository;
   private readonly exposureConfig: ExposureConfig;
 
@@ -45,6 +47,7 @@ export class RentalController {
     rentalRepo: RentalRepository;
     kycRepo: KycRepository;
     insuranceRepo: InsuranceRepository;
+    claimRepo: ClaimRepository;
     reviewRepo: ReviewRepository;
     exposureConfig: ExposureConfig;
   }) {
@@ -54,6 +57,7 @@ export class RentalController {
     this.rentalRepo = deps.rentalRepo;
     this.kycRepo = deps.kycRepo;
     this.insuranceRepo = deps.insuranceRepo;
+    this.claimRepo = deps.claimRepo;
     this.reviewRepo = deps.reviewRepo;
     this.exposureConfig = deps.exposureConfig;
   }
@@ -134,6 +138,9 @@ export class RentalController {
       const renterFreezeCases = await this.reviewRepo.findUnresolvedByFreezeTarget('User', renterId);
       const watchFreezeCases = await this.reviewRepo.findUnresolvedByFreezeTarget('Watch', watchId);
 
+      // 7c. Load open insurance claims for the watch
+      const watchOpenClaims = await this.claimRepo.findOpenByWatchId(watchId);
+
       // 8. Delegate to application service
       const result = await this.initiateRentalService.execute(actor, {
         renter,
@@ -149,6 +156,7 @@ export class RentalController {
         exposureConfig: this.exposureConfig,
         renterFreezeCases,
         watchFreezeCases,
+        watchOpenClaims,
         now,
       });
 

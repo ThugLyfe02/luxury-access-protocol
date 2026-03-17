@@ -4,6 +4,8 @@ import { PaymentProvider } from '../../domain/interfaces/PaymentProvider';
 import { Rental } from '../../domain/entities/Rental';
 import { ManualReviewCase } from '../../domain/entities/ManualReviewCase';
 import { RegulatoryGuardrails } from '../../domain/services/RegulatoryGuardrails';
+import { InsuranceClaim } from '../../domain/entities/InsuranceClaim';
+import { InsuranceGatePolicy } from '../../domain/services/InsuranceGatePolicy';
 import { ReviewFreezePolicy } from '../../domain/services/ReviewFreezePolicy';
 import { Actor } from '../auth/Actor';
 import { AuthorizationGuard } from '../auth/AuthorizationGuard';
@@ -317,6 +319,7 @@ export class MarketplacePaymentService {
       ownerConnectedAccountId: string;
       ownerShareAmount: number;
       blockingReviewCases: ManualReviewCase[];
+      openClaims: InsuranceClaim[];
     },
   ): Promise<{ transferId: string }> {
     AuthorizationGuard.requireSystemOrAdmin(actor);
@@ -362,6 +365,13 @@ export class MarketplacePaymentService {
     ReviewFreezePolicy.assertRentalNotFrozenForRelease(
       params.rental.id,
       params.blockingReviewCases,
+    );
+
+    // Gate 5b: No open insurance claims on rental or watch
+    InsuranceGatePolicy.assertInsuranceClearForRelease(
+      params.rental.id,
+      params.rental.watchId,
+      params.openClaims,
     );
 
     // Gate 6: Owner connected account must be provided

@@ -135,7 +135,7 @@ describe('MarketplacePaymentService', () => {
         rental,
         ownerConnectedAccountId: 'acct_owner',
         ownerShareAmount: 400,
-        blockingReviewCases: [],
+        blockingReviewCases: [], openClaims: [],
       });
 
       expect(result.transferId).toBe('tr_test_123');
@@ -153,7 +153,7 @@ describe('MarketplacePaymentService', () => {
       const rental = makeReleasableRental();
       await expect(
         service.releaseToOwner(renterActor, {
-          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [],
+          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [], openClaims: [],
         }),
       ).rejects.toThrow(DomainError);
     });
@@ -163,7 +163,7 @@ describe('MarketplacePaymentService', () => {
       const rental = makeRentalAtStatus(EscrowStatus.FUNDS_RELEASED_TO_OWNER);
       await expect(
         service.releaseToOwner(adminActor, {
-          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [],
+          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [], openClaims: [],
         }),
       ).rejects.toThrow(DomainError);
     });
@@ -173,7 +173,7 @@ describe('MarketplacePaymentService', () => {
       const rental = makeRentalAtStatus(EscrowStatus.EXTERNAL_PAYMENT_AUTHORIZED);
       await expect(
         service.releaseToOwner(adminActor, {
-          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [],
+          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [], openClaims: [],
         }),
       ).rejects.toThrow(DomainError);
     });
@@ -184,12 +184,12 @@ describe('MarketplacePaymentService', () => {
       // NOT calling confirmReturn()
       await expect(
         service.releaseToOwner(adminActor, {
-          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [],
+          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [], openClaims: [],
         }),
       ).rejects.toThrow(DomainError);
       try {
         await service.releaseToOwner(adminActor, {
-          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [],
+          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [], openClaims: [],
         });
       } catch (e) {
         expect((e as DomainError).code).toBe('RETURN_NOT_CONFIRMED');
@@ -204,7 +204,7 @@ describe('MarketplacePaymentService', () => {
       // Dispute is open → cannot release
       await expect(
         service.releaseToOwner(adminActor, {
-          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [],
+          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400, blockingReviewCases: [], openClaims: [],
         }),
       ).rejects.toThrow(DomainError);
     });
@@ -219,13 +219,13 @@ describe('MarketplacePaymentService', () => {
       await expect(
         service.releaseToOwner(adminActor, {
           rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400,
-          blockingReviewCases: [blockingCase],
+          blockingReviewCases: [blockingCase], openClaims: [],
         }),
       ).rejects.toThrow(DomainError);
       try {
         await service.releaseToOwner(adminActor, {
           rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400,
-          blockingReviewCases: [blockingCase],
+          blockingReviewCases: [blockingCase], openClaims: [],
         });
       } catch (e) {
         expect((e as DomainError).code).toBe('REVIEW_REQUIRED');
@@ -244,7 +244,7 @@ describe('MarketplacePaymentService', () => {
 
       const result = await service.releaseToOwner(adminActor, {
         rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 400,
-        blockingReviewCases: [resolvedCase],
+        blockingReviewCases: [resolvedCase], openClaims: [],
       });
       expect(result.transferId).toBe('tr_test_123');
     });
@@ -254,7 +254,7 @@ describe('MarketplacePaymentService', () => {
       const rental = makeReleasableRental();
       await expect(
         service.releaseToOwner(adminActor, {
-          rental, ownerConnectedAccountId: '', ownerShareAmount: 400, blockingReviewCases: [],
+          rental, ownerConnectedAccountId: '', ownerShareAmount: 400, blockingReviewCases: [], openClaims: [],
         }),
       ).rejects.toThrow(DomainError);
     });
@@ -264,7 +264,7 @@ describe('MarketplacePaymentService', () => {
       const rental = makeReleasableRental();
       await expect(
         service.releaseToOwner(adminActor, {
-          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 0, blockingReviewCases: [],
+          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 0, blockingReviewCases: [], openClaims: [],
         }),
       ).rejects.toThrow(DomainError);
     });
@@ -274,7 +274,7 @@ describe('MarketplacePaymentService', () => {
       const rental = makeReleasableRental();
       await expect(
         service.releaseToOwner(adminActor, {
-          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 999999, blockingReviewCases: [],
+          rental, ownerConnectedAccountId: 'acct', ownerShareAmount: 999999, blockingReviewCases: [], openClaims: [],
         }),
       ).rejects.toThrow(DomainError);
     });

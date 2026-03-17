@@ -19,6 +19,8 @@ import {
   ExposureSnapshot,
   ExposureConfig,
 } from '../../domain/services/PlatformExposureEngine';
+import { InsuranceClaim } from '../../domain/entities/InsuranceClaim';
+import { InsuranceGatePolicy } from '../../domain/services/InsuranceGatePolicy';
 import { ReviewFreezePolicy } from '../../domain/services/ReviewFreezePolicy';
 import { Actor } from '../auth/Actor';
 import { AuthorizationGuard } from '../auth/AuthorizationGuard';
@@ -58,6 +60,7 @@ export class InitiateRentalService {
       exposureConfig: ExposureConfig;
       renterFreezeCases: ManualReviewCase[];
       watchFreezeCases: ManualReviewCase[];
+      watchOpenClaims: InsuranceClaim[];
       now: Date;
     },
   ): Promise<InitiateRentalResult> {
@@ -75,6 +78,7 @@ export class InitiateRentalService {
       exposureConfig,
       renterFreezeCases,
       watchFreezeCases,
+      watchOpenClaims,
       now,
     } = input;
 
@@ -117,8 +121,10 @@ export class InitiateRentalService {
       // 4. Core risk policy (self-rental, high-risk, verification, role ceiling) — hard stop
       RiskPolicy.ensureCanInitiateRental(renter, watch, rentalPrice);
 
-      // 5. Insurance coverage for high-value watches — hard stop
-      RiskPolicy.ensureInsuranceActive(watchInsurance, watch, now);
+      // 5. Insurance coverage + open claims — hard stop
+      InsuranceGatePolicy.assertInsuranceClearForRental(
+        watch, watchInsurance, watchOpenClaims, now,
+      );
 
       // 6. Tier-based value ceiling — hard stop
       TierEngine.ensureTierAllowsValue(renterTier, watch.marketValue);

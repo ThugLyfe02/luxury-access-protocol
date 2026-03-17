@@ -8,6 +8,7 @@ import { InMemoryRentalRepository } from './infrastructure/repositories/InMemory
 import { InMemoryKycRepository } from './infrastructure/repositories/InMemoryKycRepository';
 import { InMemoryInsuranceRepository } from './infrastructure/repositories/InMemoryInsuranceRepository';
 import { InMemoryReviewRepository } from './infrastructure/repositories/InMemoryReviewRepository';
+import { InMemoryClaimRepository } from './infrastructure/repositories/InMemoryClaimRepository';
 import { ExposureConfig } from './domain/services/PlatformExposureEngine';
 import { ManualReviewEngine } from './application/services/ManualReviewEngine';
 import { AuditLog } from './application/audit/AuditLog';
@@ -39,6 +40,7 @@ const rentalRepo = new InMemoryRentalRepository();
 const kycRepo = new InMemoryKycRepository();
 const insuranceRepo = new InMemoryInsuranceRepository();
 const reviewRepo = new InMemoryReviewRepository();
+const claimRepo = new InMemoryClaimRepository();
 
 // --- Configuration ---
 // Default exposure config for development. In production these
@@ -67,6 +69,7 @@ const rentalController = new RentalController({
   rentalRepo,
   kycRepo,
   insuranceRepo,
+  claimRepo,
   reviewRepo,
   exposureConfig,
 });

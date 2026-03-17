@@ -92,6 +92,7 @@ function defaultInput() {
     exposureConfig: defaultExposureConfig,
     renterFreezeCases: [],
     watchFreezeCases: [],
+    watchOpenClaims: [],
     now: NOW,
   };
 }
