@@ -242,7 +242,7 @@ const outboxDispatcher = new OutboxDispatcher();
 outboxDispatcher.register('payment.checkout_session.create', new CreateCheckoutSessionHandler(paymentProvider));
 outboxDispatcher.register('payment.capture', new CapturePaymentHandler(paymentProvider));
 outboxDispatcher.register('payment.refund', new RefundPaymentHandler(paymentProvider));
-outboxDispatcher.register('payment.transfer_to_owner', new TransferToOwnerHandler(paymentProvider));
+outboxDispatcher.register('payment.transfer_to_owner', new TransferToOwnerHandler(paymentProvider, rentalRepo));
 outboxDispatcher.register('payment.connected_account.create', new CreateConnectedAccountHandler(paymentProvider));
 outboxDispatcher.register('payment.onboarding_link.create', new CreateOnboardingLinkHandler(paymentProvider));
 

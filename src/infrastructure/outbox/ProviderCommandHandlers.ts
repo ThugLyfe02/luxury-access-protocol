@@ -1,6 +1,8 @@
 import { OutboxEvent } from '../../domain/entities/OutboxEvent';
 import { DomainError } from '../../domain/errors/DomainError';
 import { PaymentProvider } from '../../domain/interfaces/PaymentProvider';
+import { RentalRepository } from '../../domain/interfaces/RentalRepository';
+import { EscrowStatus } from '../../domain/enums/EscrowStatus';
 import { OutboxEventHandler } from './OutboxDispatcher';
 
 /**
@@ -95,9 +97,22 @@ export class RefundPaymentHandler implements OutboxEventHandler {
  *
  * Transfers the owner's share to their connected account.
  * Idempotent: provider uses rentalId for dedup.
+ *
+ * After provider success, writes back the real Stripe transfer ID
+ * to the Rental entity and advances the FSM to FUNDS_RELEASED_TO_OWNER.
+ * This ensures reconciliation can verify transfer truth using real
+ * provider identifiers.
+ *
+ * Replay safety:
+ * - Provider call is idempotent (Stripe idempotency key: transfer_{rentalId})
+ * - If rental is already in FUNDS_RELEASED_TO_OWNER, write-back is skipped
+ * - OCC/version conflict on save causes outbox retry (not corruption)
  */
 export class TransferToOwnerHandler implements OutboxEventHandler {
-  constructor(private readonly provider: PaymentProvider) {}
+  constructor(
+    private readonly provider: PaymentProvider,
+    private readonly rentalRepo?: RentalRepository,
+  ) {}
 
   async handle(event: OutboxEvent): Promise<Record<string, unknown>> {
     const p = event.payload;
@@ -108,7 +123,31 @@ export class TransferToOwnerHandler implements OutboxEventHandler {
     const result = await this.provider.transferToConnectedAccount({
       amount, connectedAccountId, rentalId,
     });
+
+    if (this.rentalRepo) {
+      await this.completeRentalRelease(rentalId, result.transferId);
+    }
+
     return { transferId: result.transferId };
+  }
+
+  /**
+   * Write back real provider transfer ID and advance FSM.
+   * Idempotent: skips if rental already in FUNDS_RELEASED_TO_OWNER.
+   */
+  private async completeRentalRelease(rentalId: string, transferId: string): Promise<void> {
+    const rental = await this.rentalRepo!.findById(rentalId);
+    if (!rental) return;
+
+    // Already released — idempotent (replay after crash or duplicate processing)
+    if (rental.escrowStatus === EscrowStatus.FUNDS_RELEASED_TO_OWNER) {
+      return;
+    }
+
+    // Expected state: EXTERNAL_PAYMENT_CAPTURED (verified at queue time).
+    // releaseFunds() enforces returnConfirmed + !disputeOpen guards.
+    rental.releaseFunds(transferId);
+    await this.rentalRepo!.save(rental);
   }
 }
 

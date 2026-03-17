@@ -15,6 +15,7 @@ interface RentalRecord {
   readonly rentalPrice: number;
   readonly escrowStatus: string;
   readonly externalPaymentIntentId: string | null;
+  readonly externalTransferId: string | null;
   readonly returnConfirmed: boolean;
   readonly disputeOpen: boolean;
   readonly createdAt: string;
@@ -29,6 +30,7 @@ function toRecord(rental: Rental): RentalRecord {
     rentalPrice: rental.rentalPrice,
     escrowStatus: rental.escrowStatus,
     externalPaymentIntentId: rental.externalPaymentIntentId,
+    externalTransferId: rental.externalTransferId,
     returnConfirmed: rental.returnConfirmed,
     disputeOpen: rental.disputeOpen,
     createdAt: rental.createdAt.toISOString(),
@@ -44,6 +46,7 @@ function fromRecord(record: RentalRecord): Rental {
     rentalPrice: record.rentalPrice,
     escrowStatus: record.escrowStatus,
     externalPaymentIntentId: record.externalPaymentIntentId,
+    externalTransferId: record.externalTransferId,
     returnConfirmed: record.returnConfirmed,
     disputeOpen: record.disputeOpen,
     createdAt: new Date(record.createdAt),

@@ -42,6 +42,7 @@ export class PostgresRentalRepository implements RentalRepository {
       rentalPrice: parseFloat(row.rental_price as string),
       escrowStatus: (row.escrow_status as string).toUpperCase(),
       externalPaymentIntentId: (row.external_payment_intent_id as string) ?? null,
+      externalTransferId: (row.external_transfer_id as string) ?? null,
       returnConfirmed: row.return_confirmed as boolean,
       disputeOpen: row.dispute_open as boolean,
       createdAt: new Date(row.created_at as string),
@@ -52,7 +53,8 @@ export class PostgresRentalRepository implements RentalRepository {
   async findById(id: string): Promise<Rental | null> {
     const { rows } = await this.query(
       `SELECT id, renter_id, watch_id, rental_price, escrow_status,
-              external_payment_intent_id, return_confirmed, dispute_open,
+              external_payment_intent_id, external_transfer_id,
+              return_confirmed, dispute_open,
               created_at, version
        FROM rentals WHERE id = $1`,
       [id],
@@ -65,7 +67,8 @@ export class PostgresRentalRepository implements RentalRepository {
   async findByExternalPaymentIntentId(intentId: string): Promise<Rental | null> {
     const { rows } = await this.query(
       `SELECT id, renter_id, watch_id, rental_price, escrow_status,
-              external_payment_intent_id, return_confirmed, dispute_open,
+              external_payment_intent_id, external_transfer_id,
+              return_confirmed, dispute_open,
               created_at, version
        FROM rentals WHERE external_payment_intent_id = $1`,
       [intentId],
@@ -78,7 +81,8 @@ export class PostgresRentalRepository implements RentalRepository {
   async findByRenterId(renterId: string): Promise<Rental[]> {
     const { rows } = await this.query(
       `SELECT id, renter_id, watch_id, rental_price, escrow_status,
-              external_payment_intent_id, return_confirmed, dispute_open,
+              external_payment_intent_id, external_transfer_id,
+              return_confirmed, dispute_open,
               created_at, version
        FROM rentals WHERE renter_id = $1`,
       [renterId],
@@ -90,7 +94,8 @@ export class PostgresRentalRepository implements RentalRepository {
   async findByWatchId(watchId: string): Promise<Rental[]> {
     const { rows } = await this.query(
       `SELECT id, renter_id, watch_id, rental_price, escrow_status,
-              external_payment_intent_id, return_confirmed, dispute_open,
+              external_payment_intent_id, external_transfer_id,
+              return_confirmed, dispute_open,
               created_at, version
        FROM rentals WHERE watch_id = $1`,
       [watchId],
@@ -102,7 +107,8 @@ export class PostgresRentalRepository implements RentalRepository {
   async findActiveByWatchId(watchId: string): Promise<Rental[]> {
     const { rows } = await this.query(
       `SELECT id, renter_id, watch_id, rental_price, escrow_status,
-              external_payment_intent_id, return_confirmed, dispute_open,
+              external_payment_intent_id, external_transfer_id,
+              return_confirmed, dispute_open,
               created_at, version
        FROM rentals
        WHERE watch_id = $1 AND escrow_status NOT IN ($2, $3)`,
@@ -115,7 +121,8 @@ export class PostgresRentalRepository implements RentalRepository {
   async findAll(): Promise<Rental[]> {
     const { rows } = await this.query(
       `SELECT id, renter_id, watch_id, rental_price, escrow_status,
-              external_payment_intent_id, return_confirmed, dispute_open,
+              external_payment_intent_id, external_transfer_id,
+              return_confirmed, dispute_open,
               created_at, version
        FROM rentals`,
       [],
@@ -127,7 +134,8 @@ export class PostgresRentalRepository implements RentalRepository {
   async findAllActive(): Promise<Rental[]> {
     const { rows } = await this.query(
       `SELECT id, renter_id, watch_id, rental_price, escrow_status,
-              external_payment_intent_id, return_confirmed, dispute_open,
+              external_payment_intent_id, external_transfer_id,
+              return_confirmed, dispute_open,
               created_at, version
        FROM rentals
        WHERE escrow_status NOT IN ($1, $2)`,
@@ -171,9 +179,10 @@ export class PostgresRentalRepository implements RentalRepository {
         await this.query(
           `INSERT INTO rentals (
             id, renter_id, watch_id, rental_price, escrow_status,
-            external_payment_intent_id, return_confirmed, dispute_open,
+            external_payment_intent_id, external_transfer_id,
+            return_confirmed, dispute_open,
             created_at, updated_at, version
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10)`,
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), $11)`,
           [
             rental.id,
             rental.renterId,
@@ -181,6 +190,7 @@ export class PostgresRentalRepository implements RentalRepository {
             rental.rentalPrice,
             rental.escrowStatus,
             rental.externalPaymentIntentId,
+            rental.externalTransferId,
             rental.returnConfirmed,
             rental.disputeOpen,
             rental.createdAt,
@@ -224,14 +234,16 @@ export class PostgresRentalRepository implements RentalRepository {
         `UPDATE rentals
          SET escrow_status = $1,
              external_payment_intent_id = $2,
-             return_confirmed = $3,
-             dispute_open = $4,
+             external_transfer_id = $3,
+             return_confirmed = $4,
+             dispute_open = $5,
              updated_at = now(),
-             version = $5
-         WHERE id = $6 AND version = $7`,
+             version = $6
+         WHERE id = $7 AND version = $8`,
         [
           rental.escrowStatus,
           rental.externalPaymentIntentId,
+          rental.externalTransferId,
           rental.returnConfirmed,
           rental.disputeOpen,
           rental.version,

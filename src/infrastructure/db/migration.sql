@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS rentals (
   rental_price                NUMERIC(12,2) NOT NULL CHECK (rental_price > 0),
   escrow_status               escrow_status NOT NULL DEFAULT 'NOT_STARTED',
   external_payment_intent_id  TEXT,
+  external_transfer_id        TEXT,
   return_confirmed            BOOLEAN       NOT NULL DEFAULT FALSE,
   dispute_open                BOOLEAN       NOT NULL DEFAULT FALSE,
   created_at                  TIMESTAMPTZ   NOT NULL DEFAULT now(),
