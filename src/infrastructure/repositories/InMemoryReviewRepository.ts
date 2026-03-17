@@ -1,4 +1,4 @@
-import { ManualReviewCase } from '../../domain/entities/ManualReviewCase';
+import { ManualReviewCase, FreezeTarget } from '../../domain/entities/ManualReviewCase';
 import { ReviewRepository } from '../../domain/interfaces/ReviewRepository';
 import { DomainError } from '../../domain/errors/DomainError';
 
@@ -8,11 +8,14 @@ interface ReviewRecord {
   readonly severity: string;
   readonly reason: string;
   readonly createdAt: string;
-  readonly resolved: boolean;
+  readonly status: string;
+  readonly assignedTo: string | null;
   readonly resolvedBy: string | null;
   readonly resolvedAt: string | null;
   readonly resolution: string | null;
   readonly version: number;
+  readonly freezeTargets: FreezeTarget[];
+  readonly slaDeadline: string;
 }
 
 function toRecord(reviewCase: ManualReviewCase): ReviewRecord {
@@ -22,11 +25,14 @@ function toRecord(reviewCase: ManualReviewCase): ReviewRecord {
     severity: reviewCase.severity,
     reason: reviewCase.reason,
     createdAt: reviewCase.createdAt.toISOString(),
-    resolved: reviewCase.resolved,
+    status: reviewCase.status,
+    assignedTo: reviewCase.assignedTo,
     resolvedBy: reviewCase.resolvedBy,
     resolvedAt: reviewCase.resolvedAt?.toISOString() ?? null,
     resolution: reviewCase.resolution,
     version: reviewCase.version,
+    freezeTargets: [...reviewCase.freezeTargets],
+    slaDeadline: reviewCase.slaDeadline.toISOString(),
   };
 }
 
@@ -37,16 +43,24 @@ function fromRecord(record: ReviewRecord): ManualReviewCase {
     severity: record.severity,
     reason: record.reason,
     createdAt: new Date(record.createdAt),
-    resolved: record.resolved,
+    status: record.status,
+    assignedTo: record.assignedTo,
     resolvedBy: record.resolvedBy,
     resolvedAt: record.resolvedAt !== null ? new Date(record.resolvedAt) : null,
     resolution: record.resolution,
     version: record.version,
+    freezeTargets: record.freezeTargets,
+    slaDeadline: new Date(record.slaDeadline),
   });
 }
 
 export class InMemoryReviewRepository implements ReviewRepository {
   private readonly store = new Map<string, ReviewRecord>();
+
+  async findById(id: string): Promise<ManualReviewCase | null> {
+    const record = this.store.get(id);
+    return record ? fromRecord(record) : null;
+  }
 
   async findByRentalId(rentalId: string): Promise<ManualReviewCase[]> {
     const results: ManualReviewCase[] = [];
@@ -61,7 +75,24 @@ export class InMemoryReviewRepository implements ReviewRepository {
   async findUnresolvedByRentalId(rentalId: string): Promise<ManualReviewCase[]> {
     const results: ManualReviewCase[] = [];
     for (const record of this.store.values()) {
-      if (record.rentalId === rentalId && !record.resolved) {
+      if (record.rentalId === rentalId && !this.isTerminalStatus(record.status)) {
+        results.push(fromRecord(record));
+      }
+    }
+    return results;
+  }
+
+  async findUnresolvedByFreezeTarget(
+    entityType: string,
+    entityId: string,
+  ): Promise<ManualReviewCase[]> {
+    const results: ManualReviewCase[] = [];
+    for (const record of this.store.values()) {
+      if (this.isTerminalStatus(record.status)) continue;
+      const hasTarget = record.freezeTargets.some(
+        (t) => t.entityType === entityType && t.entityId === entityId,
+      );
+      if (hasTarget) {
         results.push(fromRecord(record));
       }
     }
@@ -71,9 +102,6 @@ export class InMemoryReviewRepository implements ReviewRepository {
   async save(reviewCase: ManualReviewCase): Promise<void> {
     const existing = this.store.get(reviewCase.id);
     if (existing) {
-      // Optimistic concurrency: every entity mutation bumps the version by 1.
-      // The stored version must equal entity.version - 1, meaning no other
-      // write changed the stored record between load and save.
       if (existing.version !== reviewCase.version - 1) {
         throw new DomainError(
           `Review case version conflict: expected stored version ${reviewCase.version - 1}, found ${existing.version}`,
@@ -82,5 +110,9 @@ export class InMemoryReviewRepository implements ReviewRepository {
       }
     }
     this.store.set(reviewCase.id, toRecord(reviewCase));
+  }
+
+  private isTerminalStatus(status: string): boolean {
+    return status === 'APPROVED' || status === 'REJECTED';
   }
 }

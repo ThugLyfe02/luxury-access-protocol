@@ -130,6 +130,10 @@ export class RentalController {
         role: renter.role as MarketplaceRole,
       };
 
+      // 7b. Load freeze cases for renter and watch
+      const renterFreezeCases = await this.reviewRepo.findUnresolvedByFreezeTarget('User', renterId);
+      const watchFreezeCases = await this.reviewRepo.findUnresolvedByFreezeTarget('Watch', watchId);
+
       // 8. Delegate to application service
       const result = await this.initiateRentalService.execute(actor, {
         renter,
@@ -143,6 +147,8 @@ export class RentalController {
         recentRentalTimestamps,
         exposureSnapshot: allWatchRentals,
         exposureConfig: this.exposureConfig,
+        renterFreezeCases,
+        watchFreezeCases,
         now,
       });
 

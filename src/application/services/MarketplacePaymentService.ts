@@ -4,6 +4,7 @@ import { PaymentProvider } from '../../domain/interfaces/PaymentProvider';
 import { Rental } from '../../domain/entities/Rental';
 import { ManualReviewCase } from '../../domain/entities/ManualReviewCase';
 import { RegulatoryGuardrails } from '../../domain/services/RegulatoryGuardrails';
+import { ReviewFreezePolicy } from '../../domain/services/ReviewFreezePolicy';
 import { Actor } from '../auth/Actor';
 import { AuthorizationGuard } from '../auth/AuthorizationGuard';
 import { AuditLog } from '../audit/AuditLog';
@@ -357,16 +358,11 @@ export class MarketplacePaymentService {
       );
     }
 
-    // Gate 5: No blocking manual review cases
-    const blockingCases = params.blockingReviewCases.filter(
-      (c) => c.isBlocking(),
+    // Gate 5: No blocking manual review cases (freeze check)
+    ReviewFreezePolicy.assertRentalNotFrozenForRelease(
+      params.rental.id,
+      params.blockingReviewCases,
     );
-    if (blockingCases.length > 0) {
-      throw new DomainError(
-        'Cannot release funds with unresolved blocking review cases',
-        'REVIEW_REQUIRED',
-      );
-    }
 
     // Gate 6: Owner connected account must be provided
     if (!params.ownerConnectedAccountId) {

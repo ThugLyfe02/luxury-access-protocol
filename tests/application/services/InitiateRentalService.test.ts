@@ -90,6 +90,8 @@ function defaultInput() {
     recentRentalTimestamps: [] as Date[],
     exposureSnapshot: emptyExposure,
     exposureConfig: defaultExposureConfig,
+    renterFreezeCases: [],
+    watchFreezeCases: [],
     now: NOW,
   };
 }

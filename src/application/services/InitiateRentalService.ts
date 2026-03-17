@@ -19,6 +19,7 @@ import {
   ExposureSnapshot,
   ExposureConfig,
 } from '../../domain/services/PlatformExposureEngine';
+import { ReviewFreezePolicy } from '../../domain/services/ReviewFreezePolicy';
 import { Actor } from '../auth/Actor';
 import { AuthorizationGuard } from '../auth/AuthorizationGuard';
 import { AuditLog } from '../audit/AuditLog';
@@ -55,6 +56,8 @@ export class InitiateRentalService {
       recentRentalTimestamps: Date[];
       exposureSnapshot: ExposureSnapshot;
       exposureConfig: ExposureConfig;
+      renterFreezeCases: ManualReviewCase[];
+      watchFreezeCases: ManualReviewCase[];
       now: Date;
     },
   ): Promise<InitiateRentalResult> {
@@ -70,6 +73,8 @@ export class InitiateRentalService {
       recentRentalTimestamps,
       exposureSnapshot,
       exposureConfig,
+      renterFreezeCases,
+      watchFreezeCases,
       now,
     } = input;
 
@@ -91,6 +96,10 @@ export class InitiateRentalService {
           );
         }
       }
+
+      // 0d. Freeze checks — hard stop if renter or watch is frozen
+      ReviewFreezePolicy.assertUserNotFrozen(renter.id, renterFreezeCases);
+      ReviewFreezePolicy.assertWatchNotFrozen(watch.id, watchFreezeCases);
 
       // 1. Anti-custody firewall — hard stop
       RegulatoryGuardrails.assertNoCustodyPrincipalMutation(
@@ -170,7 +179,11 @@ export class InitiateRentalService {
 
       // 12. Create review case if risk analysis flagged it (non-blocking HIGH/MEDIUM/LOW)
       const reviewCase = requiresManualReview
-        ? RiskAnalyzer.createReviewCase(rental.id, riskSignals, now)
+        ? RiskAnalyzer.createReviewCase(rental.id, riskSignals, now, [
+            { entityType: 'Rental', entityId: rental.id },
+            { entityType: 'User', entityId: renter.id },
+            { entityType: 'Watch', entityId: watch.id },
+          ])
         : null;
 
       // 13. External checkout session via payment provider

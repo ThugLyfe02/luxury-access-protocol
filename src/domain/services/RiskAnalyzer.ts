@@ -117,6 +117,7 @@ export class RiskAnalyzer {
     rentalId: string,
     signals: RiskSignal[],
     now: Date,
+    freezeTargets?: { entityType: 'Rental' | 'User' | 'Watch'; entityId: string }[],
   ): ManualReviewCase | null {
     if (signals.length === 0) {
       return null;
@@ -131,6 +132,7 @@ export class RiskAnalyzer {
       severity: highestSeverity,
       reason: combinedReason,
       createdAt: now,
+      freezeTargets: freezeTargets ?? [{ entityType: 'Rental', entityId: rentalId }],
     });
   }
 
