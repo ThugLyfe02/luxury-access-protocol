@@ -13,6 +13,11 @@ import { ProviderSnapshotAdapter } from '../../domain/reconciliation/ProviderSna
 import { DriftTaxonomy } from '../../domain/services/DriftTaxonomy';
 import { RepairPolicy } from '../../domain/reconciliation/RepairPolicy';
 import { RepairExecutor } from './RepairExecutor';
+import {
+  isValidTransferId,
+  assertTransferPrecedence,
+  assertEventCollectionComplete,
+} from '../../domain/invariants/TransferTruthInvariants';
 
 export interface ReconcileOneResult {
   readonly rentalId: string;
@@ -89,7 +94,22 @@ export class ReconciliationEngine {
       let transferIdForReconciliation = rental.externalTransferId;
 
       if (!transferIdForReconciliation && this.outboxRepo) {
-        transferIdForReconciliation = await this.recoverTransferIdFromOutbox(rental.id);
+        const rawRecoveredId = await this.recoverTransferIdFromOutbox(rental.id);
+
+        // INVARIANT 4: Validate recovered transfer ID format before accepting.
+        if (rawRecoveredId && !isValidTransferId(rawRecoveredId)) {
+          console.warn(
+            `[INVARIANT_GUARD] Rental ${rental.id}: recovered transferId "${rawRecoveredId}" ` +
+            `does not match expected Stripe format (tr_*). Rejecting as invalid.`,
+          );
+        } else {
+          transferIdForReconciliation = rawRecoveredId;
+        }
+
+        // INVARIANT 3: Enforce precedence — persisted always wins, mismatch throws.
+        // At this point rental.externalTransferId is null (we're in the !transferIdForReconciliation branch),
+        // so assertTransferPrecedence will return 'recovered' or 'none'.
+        assertTransferPrecedence(rental.externalTransferId, transferIdForReconciliation);
 
         // Crash-window backfill: if outbox proves a transfer succeeded at Stripe
         // but the rental's write-back was never completed (externalTransferId is null,
@@ -284,10 +304,16 @@ export class ReconciliationEngine {
       await this.rentalRepo.save(rental);
       await this.logAudit(triggeredBy, 'reconciliation_transfer_backfill', 'Rental', rental.id);
       return true;
-    } catch {
+    } catch (error) {
       // Backfill failed (dispute opened, return not confirmed, OCC conflict, etc.)
       // Non-fatal: drift detection will proceed with the original state.
       // The next reconciliation sweep will retry.
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const isOccConflict = errorMsg.includes('VERSION_CONFLICT');
+      console.warn(
+        `[SAFETY_WARNING] Backfill failed for rental ${rental.id}: ${errorMsg}` +
+        (isOccConflict ? ' (OCC conflict — will retry on next sweep)' : ''),
+      );
       return false;
     }
   }
@@ -319,6 +345,9 @@ export class ReconciliationEngine {
    */
   private async recoverTransferIdFromOutbox(rentalId: string): Promise<string | null> {
     const events = await this.outboxRepo!.findByAggregate('Rental', rentalId);
+
+    // INVARIANT 2: Assert event collection was not truncated by a LIMIT.
+    assertEventCollectionComplete(events, `recoverTransferIdFromOutbox(${rentalId})`);
 
     for (const event of events) {
       if (

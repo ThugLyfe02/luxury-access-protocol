@@ -1,6 +1,7 @@
 import { OutboxEvent, OutboxEventStatus, OutboxEventTopic } from '../../domain/entities/OutboxEvent';
 import { OutboxRepository, OutboxDiagnostics } from '../../domain/interfaces/OutboxRepository';
 import { DomainError } from '../../domain/errors/DomainError';
+import { shouldBlockOutboxDeletion, TransferInvariantViolation } from '../../domain/invariants/TransferTruthInvariants';
 
 /**
  * In-memory outbox repository for tests.
@@ -103,6 +104,24 @@ export class InMemoryOutboxRepository implements OutboxRepository {
     }
     matches.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     return matches.slice(0, limit);
+  }
+
+  /**
+   * INVARIANT 1: SUCCEEDED outbox events must never be deleted.
+   * This method enforces the retention guard. Any attempt to delete
+   * a SUCCEEDED event throws a TransferInvariantViolation.
+   */
+  async deleteEvent(eventId: string): Promise<void> {
+    const event = this.events.get(eventId);
+    if (!event) return;
+    if (shouldBlockOutboxDeletion(event.status)) {
+      throw new TransferInvariantViolation(
+        `CRITICAL: Cannot delete SUCCEEDED outbox event ${eventId}. ` +
+        `Transfer truth recovery depends on retention of SUCCEEDED events.`,
+      );
+    }
+    this.events.delete(eventId);
+    this.dedupIndex.delete(event.dedupKey);
   }
 
   async diagnostics(): Promise<OutboxDiagnostics> {

@@ -2,6 +2,7 @@ import { PoolClient } from 'pg';
 import { OutboxEvent, OutboxEventStatus, OutboxEventTopic } from '../../domain/entities/OutboxEvent';
 import { OutboxRepository, OutboxDiagnostics } from '../../domain/interfaces/OutboxRepository';
 import { PostgresClient } from '../db/PostgresClient';
+import { shouldBlockOutboxDeletion, TransferInvariantViolation } from '../../domain/invariants/TransferTruthInvariants';
 
 /**
  * Row shape from the outbox_events table.
@@ -198,6 +199,23 @@ export class PostgresOutboxRepository implements OutboxRepository {
       [topic, status, limit],
     );
     return rows.map((row) => rowToEntity(row as OutboxRow));
+  }
+
+  /**
+   * INVARIANT 1: SUCCEEDED outbox events must never be deleted.
+   * This method enforces the retention guard. Any attempt to delete
+   * a SUCCEEDED event throws a TransferInvariantViolation.
+   */
+  async deleteEvent(eventId: string): Promise<void> {
+    const event = await this.findById(eventId);
+    if (!event) return;
+    if (shouldBlockOutboxDeletion(event.status)) {
+      throw new TransferInvariantViolation(
+        `CRITICAL: Cannot delete SUCCEEDED outbox event ${eventId}. ` +
+        `Transfer truth recovery depends on retention of SUCCEEDED events.`,
+      );
+    }
+    await this.db.query(`DELETE FROM outbox_events WHERE id = $1`, [eventId]);
   }
 
   async diagnostics(): Promise<OutboxDiagnostics> {
