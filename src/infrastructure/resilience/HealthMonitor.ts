@@ -49,6 +49,7 @@ export interface HealthReport {
 export interface BacklogProvider {
   outboxPending(): Promise<number>;
   reconUnresolvedCritical(): Promise<number>;
+  stuckTransferCount?(): Promise<number>;
 }
 
 export class HealthMonitor {
@@ -163,6 +164,28 @@ export class HealthMonitor {
       } catch {
         checks.push({ name: 'outbox-backlog', healthy: false, message: 'check failed' });
         degradedReasons.push('Outbox backlog check failed');
+      }
+
+      // Stuck transfer-truth check
+      if (this.backlogProvider.stuckTransferCount) {
+        try {
+          const stuckCount = await this.backlogProvider.stuckTransferCount();
+          const stuckHealthy = stuckCount < this.config.stuckTransferDegradedThreshold;
+          checks.push({
+            name: 'stuck-transfers',
+            healthy: stuckHealthy,
+            message: `stuck=${stuckCount}`,
+          });
+          if (stuckCount >= this.config.stuckTransferNotReadyThreshold) {
+            notReady = true;
+            degradedReasons.push(`Stuck transfers critical: ${stuckCount} stuck`);
+          } else if (stuckCount >= this.config.stuckTransferDegradedThreshold) {
+            degradedReasons.push(`Stuck transfers elevated: ${stuckCount} stuck`);
+          }
+        } catch {
+          checks.push({ name: 'stuck-transfers', healthy: false, message: 'check failed' });
+          degradedReasons.push('Stuck transfer check failed');
+        }
       }
 
       try {

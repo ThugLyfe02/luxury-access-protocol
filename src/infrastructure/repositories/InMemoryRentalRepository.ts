@@ -110,6 +110,22 @@ export class InMemoryRentalRepository implements RentalRepository {
     return results;
   }
 
+  async findStuckTransferTruth(thresholdMs: number): Promise<Rental[]> {
+    const cutoff = new Date(Date.now() - thresholdMs);
+    const results: Rental[] = [];
+    for (const record of this.store.values()) {
+      if (
+        record.escrowStatus === EscrowStatus.EXTERNAL_PAYMENT_CAPTURED &&
+        record.returnConfirmed === true &&
+        record.externalTransferId === null &&
+        new Date(record.createdAt) < cutoff
+      ) {
+        results.push(fromRecord(record));
+      }
+    }
+    return results;
+  }
+
   async findAllActive(): Promise<Rental[]> {
     const results: Rental[] = [];
     for (const record of this.store.values()) {

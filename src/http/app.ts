@@ -10,6 +10,7 @@ import { createOutboxAdminRoutes, OutboxAdminRouteDeps } from './routes/outboxAd
 import { createReconciliationAdminRoutes, ReconciliationAdminRouteDeps } from './routes/reconciliationAdminRoutes';
 import { createResilienceAdminRoutes, ResilienceAdminRouteDeps } from './routes/resilienceAdminRoutes';
 import { createObservabilityRoutes, ObservabilityRouteDeps } from './routes/observabilityRoutes';
+import { createTransferDiagnosticsRoutes, TransferDiagnosticsRouteDeps } from './routes/transferDiagnosticsRoutes';
 import { createWebhookRoutes } from './routes/webhookRoutes';
 import { WebhookController } from './webhookController';
 import { JwtTokenService } from '../auth/JwtTokenService';
@@ -27,6 +28,7 @@ export interface AppDeps {
   reconciliationAdmin?: ReconciliationAdminRouteDeps;
   resilienceAdmin?: ResilienceAdminRouteDeps;
   observability?: ObservabilityRouteDeps;
+  transferDiagnostics?: TransferDiagnosticsRouteDeps;
   webhookController: WebhookController;
   tokenService: JwtTokenService;
   rateLimiters?: {
@@ -114,6 +116,9 @@ export function createApp(deps: AppDeps): Express {
   }
   if (deps.observability) {
     app.use(createObservabilityRoutes(deps.observability));
+  }
+  if (deps.transferDiagnostics) {
+    app.use(createTransferDiagnosticsRoutes(deps.transferDiagnostics));
   }
 
   // 10. Central error handler — must be registered last

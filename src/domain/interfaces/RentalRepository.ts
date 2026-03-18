@@ -21,6 +21,13 @@ export interface RentalRepository {
    */
   findAll(): Promise<Rental[]>;
   /**
+   * Return rentals stuck in transfer-truth limbo:
+   * escrowStatus === EXTERNAL_PAYMENT_CAPTURED, returnConfirmed === true,
+   * externalTransferId === null, and updated more than thresholdMs ago.
+   * Read-only query — no mutations.
+   */
+  findStuckTransferTruth(thresholdMs: number): Promise<Rental[]>;
+  /**
    * Persist the rental. Uses optimistic concurrency: if the stored version
    * does not match the rental's version at load time, the save is rejected
    * with VERSION_CONFLICT. New rentals (not previously stored) are always accepted.

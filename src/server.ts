@@ -88,6 +88,7 @@ import { ReconciliationMetricsCollector } from './observability/collectors/Recon
 import { SystemDiagnosticsService } from './observability/diagnostics/SystemDiagnosticsService';
 import { IncidentSnapshotBuilder } from './observability/diagnostics/IncidentSnapshotBuilder';
 import { SLOEvaluator } from './observability/slos/SLOEvaluator';
+import { OutboxTransferDiagnosticsService } from './application/services/OutboxTransferDiagnosticsService';
 
 /**
  * Composition root.
@@ -189,6 +190,10 @@ const healthMonitor = new HealthMonitor(resilienceConfig, allBreakers, {
   reconUnresolvedCritical: async () => {
     const diag = await reconciliationRepo.diagnostics();
     return (diag.countBySeverity['CRITICAL'] ?? 0);
+  },
+  stuckTransferCount: async () => {
+    const stuck = await rentalRepo.findStuckTransferTruth(300_000);
+    return stuck.length;
   },
 }, workerRegistry);
 
@@ -328,6 +333,9 @@ const initiateRentalService = new InitiateRentalService(paymentProvider, auditLo
 const marketplacePaymentService = new MarketplacePaymentService(paymentProvider, auditLog, outboxRepo);
 const adminControlService = new AdminControlService(freezeRepo, auditLogRepo, manualReviewRepo);
 
+// --- Transfer Diagnostics ---
+const outboxTransferDiagnosticsService = new OutboxTransferDiagnosticsService(rentalRepo, outboxRepo);
+
 // --- Incident Snapshot ---
 const incidentSnapshotBuilder = new IncidentSnapshotBuilder(outboxRepo, reconciliationRepo, auditLog);
 
@@ -382,6 +390,9 @@ const app = createApp({
     resilienceConfig,
     workerRegistry: workerRegistry ?? undefined,
     leaseManager: leaseManager ?? undefined,
+  },
+  transferDiagnostics: {
+    outboxTransferDiagnosticsService,
   },
   observability: {
     registry: metricsRegistry,

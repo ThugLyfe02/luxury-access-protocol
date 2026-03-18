@@ -131,6 +131,23 @@ export class PostgresRentalRepository implements RentalRepository {
     return rows.map((row: Record<string, unknown>) => this.hydrateRow(row));
   }
 
+  async findStuckTransferTruth(thresholdMs: number): Promise<Rental[]> {
+    const { rows } = await this.query(
+      `SELECT id, renter_id, watch_id, rental_price, escrow_status,
+              external_payment_intent_id, external_transfer_id,
+              return_confirmed, dispute_open,
+              created_at, version
+       FROM rentals
+       WHERE escrow_status = 'EXTERNAL_PAYMENT_CAPTURED'
+         AND return_confirmed = true
+         AND external_transfer_id IS NULL
+         AND updated_at < NOW() - make_interval(secs => $1::double precision)`,
+      [thresholdMs / 1000],
+    );
+
+    return rows.map((row: Record<string, unknown>) => this.hydrateRow(row));
+  }
+
   async findAllActive(): Promise<Rental[]> {
     const { rows } = await this.query(
       `SELECT id, renter_id, watch_id, rental_price, escrow_status,

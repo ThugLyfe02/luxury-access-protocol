@@ -32,6 +32,8 @@ export interface ResilienceConfig {
   readonly outboxBacklogDegradedThreshold: number;
   readonly outboxBacklogNotReadyThreshold: number;
   readonly reconUnresolvedCriticalThreshold: number;
+  readonly stuckTransferDegradedThreshold: number;
+  readonly stuckTransferNotReadyThreshold: number;
   readonly workerHeartbeatStaleMs: number;
 
   // --- Retry ---
@@ -63,6 +65,8 @@ const DEFAULT_CONFIG: ResilienceConfig = {
   outboxBacklogDegradedThreshold: 100,
   outboxBacklogNotReadyThreshold: 500,
   reconUnresolvedCriticalThreshold: 10,
+  stuckTransferDegradedThreshold: 5,
+  stuckTransferNotReadyThreshold: 20,
   workerHeartbeatStaleMs: 120_000,
 
   maxRetryAttempts: 3,
@@ -110,6 +114,10 @@ export function loadResilienceConfig(
     errors.push('outboxBacklogNotReadyThreshold must be > outboxBacklogDegradedThreshold');
   }
   if (config.reconUnresolvedCriticalThreshold < 1) errors.push('reconUnresolvedCriticalThreshold must be >= 1');
+  if (config.stuckTransferDegradedThreshold < 1) errors.push('stuckTransferDegradedThreshold must be >= 1');
+  if (config.stuckTransferNotReadyThreshold <= config.stuckTransferDegradedThreshold) {
+    errors.push('stuckTransferNotReadyThreshold must be > stuckTransferDegradedThreshold');
+  }
   if (config.workerHeartbeatStaleMs <= 0) errors.push('workerHeartbeatStaleMs must be > 0');
 
   // Retry
