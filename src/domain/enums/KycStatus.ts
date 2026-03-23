@@ -1,0 +1,7 @@
+export enum KycStatus {
+  NOT_STARTED = 'NOT_STARTED',
+  PENDING = 'PENDING',
+  VERIFIED = 'VERIFIED',
+  REJECTED = 'REJECTED',
+  EXPIRED = 'EXPIRED',
+}
