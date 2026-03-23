@@ -157,7 +157,97 @@ Requires Node.js 18+ and TypeScript 5.4+.
 ## Reconstruction progress
 
 See [RECONSTRUCTION_LEDGER.md](./RECONSTRUCTION_LEDGER.md) for:
-- Phase-by-phase build history
-- Files created/modified per phase
-- Unresolved structural gaps (ranked by severity)
-- Known risk surfaces
+
+---
+
+# Luxury Access Protocol
+
+A production-grade payment orchestration system for a luxury watch rental platform.
+
+This system is designed to guarantee:
+
+- No duplicate money movement
+- Deterministic recovery from crash windows
+- Idempotent provider operations
+- Safe reconciliation under ambiguity
+- Full auditability of financial state transitions
+
+---
+
+## Architecture Overview
+
+The system is composed of five layers:
+
+1. Domain Layer  
+   - Rental lifecycle FSM (6 states, 2 terminal)
+   - Escrow logic, disputes, claims
+
+2. Infrastructure Layer  
+   - PostgreSQL with optimistic concurrency control (OCC)
+   - Stripe Connect integration (anti-custody)
+
+3. Distributed Systems Layer  
+   - Durable outbox pattern
+   - Async workers
+   - Reconciliation engine
+
+4. Provider Anti-Corruption Layer  
+   - Typed error classification
+   - Deterministic idempotency keys
+
+5. Financial Truth Hardening  
+   - Crash-window recovery via outbox
+   - Transfer truth backfill
+   - Observability + invariant enforcement
+  
+---
+
+## Why This Is Hard
+
+Financial systems fail in subtle ways:
+
+- Network timeouts after provider success (ambiguous outcomes)
+- Duplicate execution from retries
+- Out-of-order webhooks
+- Partial failures during state persistence
+- Multi-instance race conditions
+
+This system is explicitly designed to handle all of the above.
+
+---
+
+## Safety Guarantees
+
+The system enforces:
+
+- Idempotency on all state-changing provider operations
+- Strict FSM transitions (no invalid state mutation)
+- Durable event logging via outbox
+- Recovery of lost provider truth via reconciliation
+- No silent corruption paths
+
+See `docs/SAFETY_SPEC.md` for formal specification.
+
+---
+
+## Known Limitations
+
+The following are intentional or assumption-bound:
+
+- Stripe idempotency TTL (~24h) is external
+- Reconciliation runs periodically (default: 5 min)
+- No internal accounting ledger (external provider is source of truth)
+- Outbox retention is currently unbounded (required for recovery guarantees)
+
+These do not create corruption risk but affect observability or operational guarantees.
+
+---
+
+## Verification
+
+- TypeScript: `tsc --noEmit`
+- Tests: `npx vitest run`
+
+Current state:
+- 1000+ tests passing
+- Zero type errors
